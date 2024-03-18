@@ -42,6 +42,10 @@ func (h *vmImageHandler) OnChanged(_ string, image *harvesterv1.VirtualMachineIm
 		setImageReadyCondition(toUpdate, corev1.ConditionFalse, harvesterv1.ImageImported.GetReason(image), harvesterv1.ImageImported.GetMessage(image))
 	case harvesterv1.ImageRetryLimitExceeded.IsTrue(image):
 		setImageReadyCondition(toUpdate, corev1.ConditionFalse, harvesterv1.ImageRetryLimitExceeded.GetReason(image), harvesterv1.ImageRetryLimitExceeded.GetMessage(image))
+	case harvesterv1.ImageRetryLimitExceeded.IsFalse(image) &&
+		(harvesterv1.ImageRetryLimitExceeded.GetReason(image) != harvesterv1.ImageReady.GetReason(upgrade) ||
+			harvesterv1.ImageRetryLimitExceeded.GetMessage(image) != harvesterv1.ImageReady.GetMessage(upgrade)):
+		setImageReadyCondition(toUpdate, corev1.ConditionUnknown, harvesterv1.ImageRetryLimitExceeded.GetReason(image), harvesterv1.ImageRetryLimitExceeded.GetMessage(image))
 	default:
 		return image, nil
 	}
