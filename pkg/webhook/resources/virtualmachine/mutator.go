@@ -60,12 +60,13 @@ func (m *vmMutator) Create(_ *types.Request, newObj runtime.Object) (types.Patch
 
 	logrus.Debugf("create VM %s/%s", vm.Namespace, vm.Name)
 
-	patchOps, err := m.patchResourceOvercommit(vm)
-	if err != nil {
-		return patchOps, err
-	}
+	//patchOps, err := m.patchResourceOvercommit(vm)
+	//if err != nil {
+	//	return patchOps, err
+	//}
 
-	patchOps, err = m.patchAffinity(vm, patchOps)
+	var patchOps types.PatchOps
+	patchOps, err := m.patchAffinity(vm, patchOps)
 	if err != nil {
 		return nil, err
 	}
