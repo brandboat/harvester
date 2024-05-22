@@ -82,7 +82,7 @@ are excluded from the CPU shared pool.
 Now, let's examine other pre-existing pod, such as the `harvester-node-manager` pod deployed on node1. The CPU set in it is also `0,9-24,33-47`.
 
 #### Story 2: Set cpu-manager-policy from static to none
-Assume that we have 3 nodes (node1, node2, node3), each node contains cpu set `0-47`, and the `cpu-manager-policy` is set to `static` in node1, node2.
+Assume that we have 3 nodes (node1, node2, node3), each node contains CPU set `0-47`, and the `cpu-manager-policy` is set to `static` in node1, node2.
 Initially, we have a VM named `test` with CPU pinning enabled, utilizing 16 CPUs(`1-8,25-32`), deployed to node1.
 
 Now, let's change the `cpu-manager-policy` to `none` in node1, and observe the CPU set in VM `test`, which remains `1-8,25-32`.
@@ -102,6 +102,28 @@ If users are aware of which nodes apply the static CPU manager policy, they can 
 Another approach is to use [node selector](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector),
 KubeVirt will label `cpumanager=false` to nodes that use cpu manager policy `none` and label nodes with `cpumanager=true`
 when the policy is set to `static`.
+
+#### Story 4: Restart VM
+Assume a VM with CPU pinning enabled and is utilizing 3 CPUs (`4,5,6`). After restarting the VM,
+the CPU set might change to something like `5,6,8`. This happens because restarting a VM essentially
+deletes the old pod and creates a new one, with no guarantee that the VM retain the same CPU set
+or remain on the same node.
+
+#### Story 5: Live Migration
+Assume that we have 2 nodes (node0, node1), each node contains CPU set `0-11`, and the `cpu-manager-policy` is set to `static` in all nodes.
+Initially, we have the following VMs enable CPU Pinning, and all utilizing 2 CPUs.
+- vm `test` in node1, CPU set `4, 5`
+- vm `test2` in node1, CPU set `6, 7`
+- vm `test3` in node0, CPU set `4, 5`
+
+Then start migrating `test` to node0. After migration done, when we check CPU set in vm `test`, the CPU set
+is `6, 7`, as you can see no longer `4, 5` as it was in node1.
+
+If we create more VMs and the CPU resources on all nodes are nearly exhausted,
+attempting to migrate `test` to node1 fails after several minutes and falls back to node0.
+
+#### Story 6: Upgrade Cluster
+
 
 ### API changes
 - N/A
