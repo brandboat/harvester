@@ -185,11 +185,13 @@ func (m *vmMutator) patchResourceOvercommit(vm *kubevirtv1.VirtualMachine) ([]st
 	requestsMissing := len(vm.Spec.Template.Spec.Domain.Resources.Requests) == 0
 	requestsToMutate := v1.ResourceList{}
 	overcommit, err := m.getOvercommit()
+	isDedicatedCPU := vm.Spec.Template.Spec.Domain.CPU != nil && vm.Spec.Template.Spec.Domain.CPU.DedicatedCPUPlacement
 	if err != nil || overcommit == nil {
 		return patchOps, err
 	}
 
-	if !cpu.IsZero() {
+	// do not apply overcommitted cpu since dedicated CPU requires guaranteed QoS (resource limit and request should be the same)
+	if !cpu.IsZero() && !isDedicatedCPU {
 		newRequest := cpu.MilliValue() * int64(100) / int64(overcommit.CPU)
 		quantity := resource.NewMilliQuantity(newRequest, cpu.Format)
 		if requestsMissing {

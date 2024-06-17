@@ -27,17 +27,19 @@ const (
 
 func TestPatchResourceOvercommit(t *testing.T) {
 	tests := []struct {
-		name        string
-		resourceReq kubevirtv1.ResourceRequirements
-		memory      *kubevirtv1.Memory
-		patchOps    []string
-		setting     string
+		name           string
+		resourceReq    kubevirtv1.ResourceRequirements
+		memory         *kubevirtv1.Memory
+		patchOps       []string
+		setting        string
+		isDedicatedCPU bool
 	}{
 		{
-			name:        "has no limits",
-			resourceReq: kubevirtv1.ResourceRequirements{},
-			patchOps:    nil,
-			setting:     "",
+			name:           "has no limits",
+			resourceReq:    kubevirtv1.ResourceRequirements{},
+			patchOps:       nil,
+			setting:        "",
+			isDedicatedCPU: false,
 		},
 		{
 			name: "has memory limit and other requests",
@@ -54,7 +56,8 @@ func TestPatchResourceOvercommit(t *testing.T) {
 				`{"op": "replace", "path": "/spec/template/spec/domain/resources/requests/memory", "value": "256Mi"}`,
 				`{"op": "replace", "path": "/spec/template/spec/domain/memory", "value": {"guest":"924Mi"}}`, // 1Gi - 100Mi
 			},
-			setting: "",
+			setting:        "",
+			isDedicatedCPU: false,
 		},
 		{
 			name: "has cpu limit and other requests",
@@ -70,7 +73,8 @@ func TestPatchResourceOvercommit(t *testing.T) {
 			patchOps: []string{
 				`{"op": "replace", "path": "/spec/template/spec/domain/resources/requests/cpu", "value": "500m"}`,
 			},
-			setting: "",
+			setting:        "",
+			isDedicatedCPU: false,
 		},
 		{
 			name: "has both cpu and memory limits but not requests",
@@ -85,6 +89,7 @@ func TestPatchResourceOvercommit(t *testing.T) {
 				`{"op": "replace", "path": "/spec/template/spec/domain/memory", "value": {"guest":"924Mi"}}`, // 1Gi - 100Mi
 				`{"op": "replace", "path": "/spec/template/spec/domain/resources/requests", "value": {"cpu":"500m","memory":"256Mi"}}`,
 			},
+			isDedicatedCPU: false,
 		},
 		{
 			name: "use value instead of default setting",
@@ -99,7 +104,8 @@ func TestPatchResourceOvercommit(t *testing.T) {
 				`{"op": "replace", "path": "/spec/template/spec/domain/memory", "value": {"guest":"924Mi"}}`, // 1Gi - 100Mi
 				`{"op": "replace", "path": "/spec/template/spec/domain/resources/requests", "value": {"cpu":"100m","memory":"102Mi"}}`,
 			},
-			setting: `{"cpu":1000,"memory":1000,"storage":800}`,
+			setting:        `{"cpu":1000,"memory":1000,"storage":800}`,
+			isDedicatedCPU: false,
 		},
 		{
 			name: "replace old guest memory",
@@ -116,7 +122,20 @@ func TestPatchResourceOvercommit(t *testing.T) {
 				`{"op": "replace", "path": "/spec/template/spec/domain/memory/guest", "value": "924Mi"}`, // 1Gi - 100Mi
 				`{"op": "replace", "path": "/spec/template/spec/domain/resources/requests", "value": {"cpu":"100m","memory":"102Mi"}}`,
 			},
-			setting: `{"cpu":1000,"memory":1000,"storage":800}`,
+			setting:        `{"cpu":1000,"memory":1000,"storage":800}`,
+			isDedicatedCPU: false,
+		},
+		{
+			name: "dedicated cpu is true and has cpu limit",
+			resourceReq: kubevirtv1.ResourceRequirements{
+				Limits: map[v1.ResourceName]resource.Quantity{
+					v1.ResourceCPU: *resource.NewMilliQuantity(1000, resource.DecimalSI),
+				},
+			},
+			memory:         nil,
+			patchOps:       nil,
+			setting:        "",
+			isDedicatedCPU: true,
 		},
 	}
 
@@ -147,6 +166,9 @@ func TestPatchResourceOvercommit(t *testing.T) {
 							Domain: kubevirtv1.DomainSpec{
 								Resources: tc.resourceReq,
 								Memory:    tc.memory,
+								CPU: &kubevirtv1.CPU{
+									DedicatedCPUPlacement: tc.isDedicatedCPU,
+								},
 							},
 						},
 					},
