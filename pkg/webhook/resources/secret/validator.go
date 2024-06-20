@@ -57,7 +57,7 @@ func (v *secretValidator) Create(_ *types.Request, newObj runtime.Object) error 
 	return nil
 }
 
-func (v *secretValidator) Update(_ *types.Request, oldObj runtime.Object, newObj runtime.Object) error {
+func (v *secretValidator) Update(_ *types.Request, _ runtime.Object, newObj runtime.Object) error {
 	secret := newObj.(*v1.Secret)
 	if secret.Name == NodeCPUManagerPolicies {
 		validateNodeCPUManagerPolicies(secret)
