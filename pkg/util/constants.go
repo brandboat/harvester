@@ -111,4 +111,7 @@ const (
 	MaintainModeStrategyShutdownAndRestartAfterEnable  = "ShutdownAndRestartAfterEnable"
 	MaintainModeStrategyShutdownAndRestartAfterDisable = "ShutdownAndRestartAfterDisable"
 	MaintainModeStrategyShutdown                       = "Shutdown"
+
+	AnnotationCPUManagerUpdateStatus = prefix + "/cpu-manager-update-status"
+	LabelCPUManagerUpdate            = prefix + "/cpu-manager-update"
 )
