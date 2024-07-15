@@ -47,7 +47,7 @@ func (n *NodeBuilder) Annotation(key string, value string) *NodeBuilder {
 func Test_GetJob(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "node-1",
+			Name: "harvester-node-0",
 			Annotations: map[string]string{
 				util.AnnotationCPUManagerUpdateStatus: `{"policy": "foobar", "status": "requested"}`},
 		},
@@ -59,7 +59,7 @@ func Test_GetJob(t *testing.T) {
 		vmiCache:  fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
 	}
 	updateStatus := CPUManagerUpdateStatus{
-		policy: CPUManagerStaticPolicy,
+		policy: CPUManagerNonePolicy,
 		status: CPUManagerRequestedStatus,
 	}
 	res, _ := yaml.Marshal(handler.getJob(&updateStatus, node, "registry.suse.com/bci/bci-base:15.5"))
