@@ -38,6 +38,10 @@ const (
 	CPUManagerRequestedStatus CPUManagerStatus = "requested"
 	CPUManagerSuccessStatus   CPUManagerStatus = "success"
 	CPUManagerFailedStatus    CPUManagerStatus = "failed"
+
+	HostDir                     string = "/host"
+	ScriptWaitLabelTimeoutInSec int64  = 300
+	JobTimeoutInSec             int64  = ScriptWaitLabelTimeoutInSec * 2
 )
 
 type CPUManagerPolicy string
@@ -196,33 +200,98 @@ func running(updateStatus *CPUManagerUpdateStatus, node *corev1.Node) *corev1.No
 	return toUpdate
 }
 
-// TODO: wait until cpumanager is true ?
+// TODO: is it possible to make the script without ; and good looking when using kubectl -o yaml (without \n) ?
+// TODO: should I rollback if anything goes wrong ?
 func getScript(nodeName string, policy CPUManagerPolicy) string {
+	var label string
+	if policy == CPUManagerStaticPolicy {
+		label = "true"
+	} else {
+		label = "false"
+	}
 	return fmt.Sprintf(`
-set -e;
-echo "Start update cpu-manager-policy option...";
-KUBELET_CONFIG_FILE="/host/etc/rancher/rke2/config.yaml.d/99-z01-harvester-cpu-manager.yaml";
-CPU_MANAGER_STATE_FILE="/host/var/lib/kubelet/cpu_manager_state";
-NODE_NAME="%s";
-NODE_POLICY="%s";
-sed -i "s/cpu-manager-policy=$CURRENT_POLICY/cpu-manager-policy=$NODE_POLICY/" "$KUBELET_CONFIG_FILE";
-echo "Updated CPU manager policy for $NODE_NAME to $NODE_POLICY in $KUBELET_CONFIG_FILE.";
-rm -f "$CPU_MANAGER_STATE_FILE";
-echo "Removed $CPU_MANAGER_STATE_FILE.";
-if chroot /host systemctl is-active --quiet rke2-server; then
+set -e
+
+echo "Start update cpu-manager-policy option..."
+HOST_DIR="%s"
+KUBECTL="$HOST_DIR/$(readlink $HOST_DIR/var/lib/rancher/rke2/bin)/kubectl"
+KUBELET_CONFIG_FILE="$HOST_DIR/etc/rancher/rke2/config.yaml.d/99-z01-harvester-cpu-manager.yaml"
+CPU_MANAGER_STATE_FILE="$HOST_DIR/var/lib/kubelet/cpu_manager_state"
+NODE_NAME="%s"
+NODE_POLICY="%s"
+EXIT_CODE=0
+
+if ! $KUBECTL get node "$NODE_NAME" --show-labels | grep -q "cpumanager="; then
+	echo "Error: There is no label cpumanager in node $NODE_NAME."
+	exit 1
+fi
+
+if ! [ -f "$KUBELET_CONFIG_FILE" ]; then
+	echo "Error: $KUBELET_CONFIG_FILE does not exist."
+	exit 1
+fi
+
+CURRENT_POLICY=$(grep -oP '(?<=cpu-manager-policy=)\w+' "$KUBELET_CONFIG_FILE")
+
+if [ "$CURRENT_POLICY" != "%s" ] && [ "$CURRENT_POLICY" != "%s"; then
+	echo "Error: invalid cpu-manager-policy in $KUBELET_CONFIG_FILE"
+	exit 1
+fi
+
+sed -i "s/cpu-manager-policy=$CURRENT_POLICY/cpu-manager-policy=$NODE_POLICY/" "$KUBELET_CONFIG_FILE"
+echo "Updated CPU manager policy for $NODE_NAME to $NODE_POLICY in $KUBELET_CONFIG_FILE."
+
+if [ -f "$CPU_MANAGER_STATE_FILE" ]; then
+	mv "$CPU_MANAGER_STATE_FILE" "${CPU_MANAGER_STATE_FILE}.old"
+	echo "File $CPU_MANAGER_STATE_FILE has been renamed to ${CPU_MANAGER_STATE_FILE}.old"
+else
+	echo "File $CPU_MANAGER_STATE_FILE does not exist."
+fi
+
+if chroot $HOST_DIR systemctl is-active --quiet rke2-server; then
 	echo "Restarting rke2-server."
-	chroot /host systemctl restart rke2-server
+	if ! chroot $HOST_DIR systemctl restart rke2-server; then
+		echo "Error: failed to restart rke2-server."
+		exit 1
+	fi
 	echo "Restarted rke2-server."
-elif chroot /host systemctl is-active --quiet rke2-agent; then
+elif chroot $HOST_DIR systemctl is-active --quiet rke2-agent; then
 	echo "Restarting rke2-agent."
-	chroot /host systemctl restart rke2-agent
+	if ! chroot $HOST_DIR systemctl restart rke2-agent; then
+		echo "Error: failed to restart rke2-agent."
+		exit 1
+	fi
 	echo "Restarted rke2-agent."
 else
-	echo "Neither rke2-server nor rke2-agent are running. No services restarted."
-fi`, nodeName, policy)
+	echo "Error: Neither rke2-server nor rke2-agent are running. No services restarted."
+	exit 1
+fi
+
+TIMEOUT=%d
+INTERVAL=5
+ELAPSED=0
+LABEL_VALUE=%s
+LABELS=""
+while [ $ELAPSED -lt $TIMEOUT ]; do
+	if ! LABELS=$($KUBECTL get node "$NODE_NAME" --show-labels); then
+		echo "Error: failed to get labels in $NODE_NAME"
+		exit 1
+	fi
+	if grep -q "cpumanager=$LABEL_VALUE" <<< $LABELS; then
+		echo "End update cpu-manager-policy"
+		exit 0
+	fi
+	echo "Value in label cpumanager is not $LABEL_VALUE, wait ${INTERVAL}s..."
+	sleep $INTERVAL
+	ELAPSED=$((ELAPSED + INTERVAL))
+done
+echo "Error: timeout, elapsed ${ELAPSED}s"
+exit 1
+`, HostDir, nodeName, policy, CPUManagerNonePolicy, CPUManagerStaticPolicy, ScriptWaitLabelTimeoutInSec, label)
 }
 
-// TODO: /host not found
+// TODO: there is a bug in sed replace static/none
+// TODO: job name should be unique
 func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, node *corev1.Node, image string) *batchv1.Job {
 	hostPathDirectory := corev1.HostPathDirectory
 	return &batchv1.Job{
@@ -242,8 +311,9 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 			},
 		},
 		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: ptr.To[int32](86400), // TODO ???
-			ActiveDeadlineSeconds:   ptr.To[int64](300),   // TODO ???
+			BackoffLimit:            ptr.To(int32(0)),        // do not retry
+			TTLSecondsAfterFinished: ptr.To(int32(86400)),    // TODO is default value ok ?
+			ActiveDeadlineSeconds:   ptr.To(JobTimeoutInSec), // TODO is default value ok ?
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -252,17 +322,14 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
+					HostPID:       true,
 					Containers: []corev1.Container{
 						{
 							Name:    "update-cpu-manager",
 							Image:   image,
-							Command: []string{"bash", "-c"},
-							Args:    []string{getScript(node.Name, updateStatus.policy)},
+							Command: []string{"bash", "-c", getScript(node.Name, updateStatus.policy)},
 							VolumeMounts: []corev1.VolumeMount{
-								{Name: "host-root", MountPath: "/host"},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								Privileged: ptr.To[bool](true),
+								{Name: "host-root", MountPath: HostDir},
 							},
 						},
 					},
@@ -283,7 +350,7 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 						},
 					},
 					Volumes: []corev1.Volume{{
-						Name: `host-root`,
+						Name: "host-root",
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/",
