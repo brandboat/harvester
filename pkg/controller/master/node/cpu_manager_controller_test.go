@@ -17,16 +17,16 @@ import (
 	"github.com/harvester/harvester/pkg/util/fakeclients"
 )
 
-func fakeNode() *NodeBuilder {
-	return &NodeBuilder{
-		node: &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Labels:      map[string]string{},
-				Annotations: map[string]string{},
-			},
-		},
-	}
-}
+// func fakeNode() *NodeBuilder {
+// 	return &NodeBuilder{
+// 		node: &corev1.Node{
+// 			ObjectMeta: metav1.ObjectMeta{
+// 				Labels:      map[string]string{},
+// 				Annotations: map[string]string{},
+// 			},
+// 		},
+// 	}
+// }
 
 func (n *NodeBuilder) CPUManagerUpdateStatus(policy CPUManagerPolicy, status CPUManagerStatus) *NodeBuilder {
 	updateStatus := &CPUManagerUpdateStatus{
