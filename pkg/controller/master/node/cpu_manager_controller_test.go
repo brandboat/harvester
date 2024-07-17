@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
-	"github.com/harvester/harvester/pkg/generated/clientset/versioned/fake"
 	"github.com/harvester/harvester/pkg/util"
 	"github.com/harvester/harvester/pkg/util/fakeclients"
 )
@@ -106,11 +105,9 @@ func Test_CPUManagerController(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		k8sclientset := k8sfake.NewSimpleClientset(tc.given.node)
-		var clientset = fake.NewSimpleClientset()
 		var handler = &cpuManagerNodeHandler{
 			nodeCache:  fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
 			nodeClient: fakeclients.NodeClient(k8sclientset.CoreV1().Nodes),
-			vmiCache:   fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
 		}
 
 		changedNode, err := handler.OnNodeChanged(tc.given.key, tc.given.node)
