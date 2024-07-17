@@ -5,12 +5,31 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	batchv1type "k8s.io/client-go/kubernetes/typed/batch/v1"
+
+	ctlbatchv1 "github.com/rancher/wrangler/pkg/generated/controllers/batch/v1"
 )
 
-type JobCache func() batchv1type.JobInterface
+type JobCache func(string) batchv1type.JobInterface
+
+func (c JobCache) Get(_, _ string) (*batchv1.Job, error) {
+	panic("implement me")
+}
+
+func (c JobCache) List(_ string, _ labels.Selector) ([]*batchv1.Job, error) {
+	panic("implement me")
+}
+
+func (c JobCache) AddIndexer(_ string, _ ctlbatchv1.JobIndexer) {
+	panic("implement me")
+}
+
+func (c JobCache) GetByIndex(_, _ string) ([]*batchv1.Job, error) {
+	panic("implement me")
+}
 
 type JobClient func(string) batchv1type.JobInterface
 

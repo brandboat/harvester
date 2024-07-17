@@ -221,12 +221,12 @@ func TestValidateCordonAndMaintenanceMode(t *testing.T) {
 }
 
 func TestValidateCPUManagerOperation(t *testing.T) {
-	k8sclientset := k8sfake.NewSimpleClientset(tc.given.node)
-	client := fake.NewSimpleClientset(typedObjects...)
+	k8sclientset := k8sfake.NewSimpleClientset()
+	client := fake.NewSimpleClientset()
 
-	validator := NewValidator(
+	NewValidator(
 		fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
-		fakeclients.JobCache(k8sclientset.CoreV1().Jobs),
+		fakeclients.JobCache(k8sclientset.BatchV1().Jobs),
 		fakeclients.VirtualMachineInstanceCache(client.KubevirtV1().VirtualMachineInstances),
 	)
 }
