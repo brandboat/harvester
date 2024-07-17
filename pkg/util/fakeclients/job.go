@@ -10,6 +10,8 @@ import (
 	batchv1type "k8s.io/client-go/kubernetes/typed/batch/v1"
 )
 
+type JobCache func() batchv1type.JobInterface
+
 type JobClient func(string) batchv1type.JobInterface
 
 func (c JobClient) Update(job *batchv1.Job) (*batchv1.Job, error) {

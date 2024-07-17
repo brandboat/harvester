@@ -97,7 +97,12 @@ func validateCordonAndMaintenanceMode(oldNode, newNode *corev1.Node, nodeList []
 }
 
 func (v *nodeValidator) validateCPUManagerOperation(node *corev1.Node) error {
-	cpuManagerStatus, err := ctlnode.GetCPUManagerUpdateStatus(node.Annotations[util.AnnotationCPUManagerUpdateStatus])
+	annot, ok := node.Annotations[util.AnnotationCPUManagerUpdateStatus]
+	if !ok {
+		return nil
+	}
+
+	cpuManagerStatus, err := ctlnode.GetCPUManagerUpdateStatus(annot)
 	if err != nil {
 		return werror.NewBadRequest("Failed to retreive cpu-manager-update-status from annotation")
 	}
@@ -136,6 +141,9 @@ func (v *nodeValidator) validateCPUManagerOperation(node *corev1.Node) error {
 	labelSelector := labels.NewSelector()
 	labelSelector.Add(*requirement)
 	jobs, err := v.jobCache.List("", labelSelector)
+	if err != nil {
+		return werror.NewBadRequest("Failed to list jobs")
+	}
 	for _, job := range jobs {
 		if !condition.Cond(batchv1.JobComplete).IsTrue(job) && !condition.Cond(batchv1.JobFailed).IsTrue(job) {
 			return werror.NewBadRequest(fmt.Sprintf("There is another ongoing job %s updating cpu manager policy", job.Name))

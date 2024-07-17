@@ -8,6 +8,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	ctlnode "github.com/harvester/harvester/pkg/controller/master/node"
+	"github.com/harvester/harvester/pkg/generated/clientset/versioned/fake"
+	"github.com/harvester/harvester/pkg/util/fakeclients"
+
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestValidateCordonAndMaintenanceMode(t *testing.T) {
@@ -214,4 +218,15 @@ func TestValidateCordonAndMaintenanceMode(t *testing.T) {
 			assert.Nil(t, err, tc.name)
 		}
 	}
+}
+
+func TestValidateCPUManagerOperation(t *testing.T) {
+	k8sclientset := k8sfake.NewSimpleClientset(tc.given.node)
+	client := fake.NewSimpleClientset(typedObjects...)
+
+	validator := NewValidator(
+		fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
+		fakeclients.JobCache(k8sclientset.CoreV1().Jobs),
+		fakeclients.VirtualMachineInstanceCache(client.KubevirtV1().VirtualMachineInstances),
+	)
 }
