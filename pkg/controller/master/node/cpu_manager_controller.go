@@ -19,7 +19,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 
 	"github.com/harvester/harvester/pkg/config"
-	v1 "github.com/harvester/harvester/pkg/generated/controllers/kubevirt.io/v1"
 	"github.com/harvester/harvester/pkg/util"
 	"github.com/harvester/harvester/pkg/util/catalog"
 )
@@ -57,8 +56,8 @@ type cpuManagerNodeHandler struct {
 	nodeCache  ctlcorev1.NodeCache
 	nodeClient ctlcorev1.NodeClient
 	jobClient  ctlbatchv1.JobClient
-	vmiCache   v1.VirtualMachineInstanceCache
-	namespace  string
+	// vmiCache   v1.VirtualMachineInstanceCache
+	namespace string
 }
 
 // CPUManagerRegister registers the node controller
@@ -66,15 +65,15 @@ func CPUManagerRegister(ctx context.Context, management *config.Management, opti
 	app := management.CatalogFactory.Catalog().V1().App()
 	job := management.BatchFactory.Batch().V1().Job()
 	node := management.CoreFactory.Core().V1().Node()
-	vmi := management.VirtFactory.Kubevirt().V1().VirtualMachineInstance()
+	// vmi := management.VirtFactory.Kubevirt().V1().VirtualMachineInstance()
 
 	cpuManagerNodeHandler := &cpuManagerNodeHandler{
 		appCache:   app.Cache(),
 		jobClient:  job,
 		nodeCache:  node.Cache(),
 		nodeClient: node,
-		vmiCache:   vmi.Cache(),
-		namespace:  options.Namespace,
+		// vmiCache:   vmi.Cache(),
+		namespace: options.Namespace,
 	}
 
 	node.OnChange(ctx, CPUManagerControllerName, cpuManagerNodeHandler.OnNodeChanged)

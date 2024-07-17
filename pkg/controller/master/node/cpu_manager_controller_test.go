@@ -54,12 +54,12 @@ func Test_GetJob(t *testing.T) {
 		},
 	}
 	k8sclientset := k8sfake.NewSimpleClientset(node)
-	var clientset = fake.NewSimpleClientset()
+	// var clientset = fake.NewSimpleClientset()
 	var handler = &cpuManagerNodeHandler{
 		nodeCache:  fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
 		nodeClient: fakeclients.NodeClient(k8sclientset.CoreV1().Nodes),
 		// jobClient:  fakeclients.JobClient(k8sclientset.BatchV1().Jobs),
-		vmiCache:  fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
+		// vmiCache:  fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
 		namespace: "harveseter-system",
 	}
 	res, _ := yaml.Marshal(handler.getJob(CPUManagerNonePolicy, node, "registry.suse.com/bci/bci-base:15.5"))

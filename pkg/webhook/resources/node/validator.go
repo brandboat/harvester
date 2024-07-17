@@ -26,10 +26,11 @@ import (
 	"github.com/rancher/wrangler/pkg/condition"
 )
 
-func NewValidator(nodeCache v1.NodeCache, jobCache ctlbatchv1.JobCache) types.Validator {
+func NewValidator(nodeCache v1.NodeCache, jobCache ctlbatchv1.JobCache, vmiCache ctlkubevirtv1.VirtualMachineInstanceCache) types.Validator {
 	return &nodeValidator{
 		nodeCache: nodeCache,
 		jobCache:  jobCache,
+		vmiCache:  vmiCache,
 	}
 }
 
