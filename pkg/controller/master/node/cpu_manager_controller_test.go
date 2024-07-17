@@ -31,8 +31,8 @@ func fakeNode() *NodeBuilder {
 
 func (n *NodeBuilder) CPUManagerUpdateStatus(policy CPUManagerPolicy, status CPUManagerStatus) *NodeBuilder {
 	updateStatus := &CPUManagerUpdateStatus{
-		policy: policy,
-		status: status,
+		Policy: policy,
+		Status: status,
 	}
 	jsonStr, _ := json.Marshal(updateStatus)
 	n.node.Annotations[util.AnnotationCPUManagerUpdateStatus] = string(jsonStr)
@@ -44,6 +44,7 @@ func (n *NodeBuilder) Annotation(key string, value string) *NodeBuilder {
 	return n
 }
 
+// TODO: remove this
 func Test_GetJob(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -55,14 +56,13 @@ func Test_GetJob(t *testing.T) {
 	k8sclientset := k8sfake.NewSimpleClientset(node)
 	var clientset = fake.NewSimpleClientset()
 	var handler = &cpuManagerNodeHandler{
-		nodeCache: fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
+		nodeCache:  fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
+		nodeClient: fakeclients.NodeClient(k8sclientset.CoreV1().Nodes),
+		// jobClient:  fakeclients.JobClient(k8sclientset.BatchV1().Jobs),
 		vmiCache:  fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
+		namespace: "harveseter-system",
 	}
-	updateStatus := CPUManagerUpdateStatus{
-		policy: CPUManagerNonePolicy,
-		status: CPUManagerRequestedStatus,
-	}
-	res, _ := yaml.Marshal(handler.getJob(&updateStatus, node, "registry.suse.com/bci/bci-base:15.5"))
+	res, _ := yaml.Marshal(handler.getJob(CPUManagerNonePolicy, node, "registry.suse.com/bci/bci-base:15.5"))
 	fmt.Println(string(res))
 }
 
@@ -88,7 +88,7 @@ func Test_CPUManagerController(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node-1",
 						Annotations: map[string]string{
-							util.AnnotationCPUManagerUpdateStatus: `{"policy": "foobar", "status": "requested"}`},
+							util.AnnotationCPUManagerUpdateStatus: `{"policy":"foobar","status":"requested"}`},
 					},
 				},
 			},
@@ -97,9 +97,10 @@ func Test_CPUManagerController(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node-1",
 						Annotations: map[string]string{
-							util.AnnotationCPUManagerUpdateStatus: `{"policy": "foobar", "status": "requested"}`},
+							util.AnnotationCPUManagerUpdateStatus: `{"policy":"foobar","status":"failed"}`},
 					},
 				},
+				errMsg: "",
 			},
 		},
 	}
@@ -107,8 +108,9 @@ func Test_CPUManagerController(t *testing.T) {
 		k8sclientset := k8sfake.NewSimpleClientset(tc.given.node)
 		var clientset = fake.NewSimpleClientset()
 		var handler = &cpuManagerNodeHandler{
-			nodeCache: fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
-			vmiCache:  fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
+			nodeCache:  fakeclients.NodeCache(k8sclientset.CoreV1().Nodes),
+			nodeClient: fakeclients.NodeClient(k8sclientset.CoreV1().Nodes),
+			vmiCache:   fakeclients.VirtualMachineInstanceCache(clientset.KubevirtV1().VirtualMachineInstances),
 		}
 
 		changedNode, err := handler.OnNodeChanged(tc.given.key, tc.given.node)

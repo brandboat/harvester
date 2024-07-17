@@ -113,5 +113,6 @@ const (
 	MaintainModeStrategyShutdown                       = "Shutdown"
 
 	AnnotationCPUManagerUpdateStatus = prefix + "/cpu-manager-update-status"
-	LabelCPUManagerUpdate            = prefix + "/cpu-manager-update"
+	LabelCPUManagerUpdateNode        = prefix + "/cpu-manager-update-node"
+	LabelCPUManagerUpdatePolicy      = prefix + "/cpu-manager-update-policy"
 )

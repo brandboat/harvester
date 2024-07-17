@@ -12,6 +12,7 @@ import (
 	"github.com/rancher/apiserver/pkg/apierror"
 	"github.com/rancher/apiserver/pkg/types"
 	"github.com/rancher/norman/httperror"
+	ctlbatchv1 "github.com/rancher/wrangler/pkg/generated/controllers/batch/v1"
 	ctlcorev1 "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/pkg/schemas/validation"
 	"github.com/rancher/wrangler/pkg/slice"
@@ -49,6 +50,8 @@ const (
 	seederAddonName              = "harvester-seeder"
 	defaultAddonNamespace        = "harvester-system"
 	nodeReady                    = "inventoryNodeReady"
+	enableCPUManager             = "enableCPUManager"
+	disableCPUManager            = "disableCPUManager"
 )
 
 var (
@@ -61,6 +64,8 @@ func Formatter(request *types.APIRequest, resource *types.RawResource) {
 	resource.AddAction(request, listUnhealthyVM)
 	resource.AddAction(request, maintenancePossible)
 	resource.AddAction(request, powerActionPossible)
+	resource.AddAction(request, enableCPUManager)
+	resource.AddAction(request, disableCPUManager)
 
 	if request.AccessControl.CanUpdate(request, resource.APIObject, resource.Schema) != nil {
 		return
@@ -81,6 +86,7 @@ func Formatter(request *types.APIRequest, resource *types.RawResource) {
 }
 
 type ActionHandler struct {
+	jobCache                    ctlbatchv1.JobCache
 	nodeCache                   ctlcorev1.NodeCache
 	nodeClient                  ctlcorev1.NodeClient
 	longhornVolumeCache         ctllhv1.VolumeCache
@@ -145,9 +151,38 @@ func (h ActionHandler) do(rw http.ResponseWriter, req *http.Request) error {
 			return apierror.NewAPIError(validation.InvalidBodyContent, fmt.Sprintf("Failed to decode request body: %v ", err))
 		}
 		return h.powerAction(toUpdate, input.Operation)
+	case enableCPUManager:
+		return h.enableCPUManager(toUpdate)
+	case disableCPUManager:
+		return h.disableCPUManager(toUpdate)
 	default:
 		return apierror.NewAPIError(validation.InvalidAction, "Unsupported action")
 	}
+}
+
+func (h ActionHandler) enableCPUManager(node *corev1.Node) error {
+	return h.requestCPUManager(node, ctlnode.CPUManagerStaticPolicy)
+}
+
+func (h ActionHandler) disableCPUManager(node *corev1.Node) error {
+	return h.requestCPUManager(node, ctlnode.CPUManagerNonePolicy)
+}
+
+func (h ActionHandler) requestCPUManager(node *corev1.Node, policy ctlnode.CPUManagerPolicy) error {
+	newNode := node.DeepCopy()
+	if newNode.Annotations == nil {
+		newNode.Annotations = make(map[string]string)
+	}
+
+	updateStatus := &ctlnode.CPUManagerUpdateStatus{
+		Status: ctlnode.CPUManagerRequestedStatus,
+		Policy: policy,
+	}
+
+	jsonStr, _ := json.Marshal(updateStatus)
+	newNode.Annotations[util.AnnotationCPUManagerUpdateStatus] = string(jsonStr)
+	_, err := h.nodeClient.Update(newNode)
+	return err
 }
 
 func (h ActionHandler) cordonUncordonNode(node *corev1.Node, actionName string, cordon bool) error {

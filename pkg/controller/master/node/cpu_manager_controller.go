@@ -4,19 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/go-errors/errors"
 	catalogv1 "github.com/rancher/rancher/pkg/generated/controllers/catalog.cattle.io/v1"
+	"github.com/rancher/wrangler/pkg/condition"
 	ctlcorev1 "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/pkg/name"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
-
-	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	ctlbatchv1 "github.com/rancher/wrangler/pkg/generated/controllers/batch/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -25,32 +22,32 @@ import (
 	v1 "github.com/harvester/harvester/pkg/generated/controllers/kubevirt.io/v1"
 	"github.com/harvester/harvester/pkg/util"
 	"github.com/harvester/harvester/pkg/util/catalog"
-	"github.com/harvester/harvester/pkg/util/virtualmachineinstance"
 )
 
 const (
-	CPUManagerNodeControllerName = "cpu-manager-node-controller"
+	CPUManagerControllerName = "cpu-manager-controller"
 	// policy
 	CPUManagerStaticPolicy CPUManagerPolicy = "static"
 	CPUManagerNonePolicy   CPUManagerPolicy = "none"
 	// status
-	CPUManagerRunningStatus   CPUManagerStatus = "running"
 	CPUManagerRequestedStatus CPUManagerStatus = "requested"
+	CPUManagerRunningStatus   CPUManagerStatus = "running"
 	CPUManagerSuccessStatus   CPUManagerStatus = "success"
 	CPUManagerFailedStatus    CPUManagerStatus = "failed"
 
 	HostDir                     string = "/host"
-	ScriptWaitLabelTimeoutInSec int64  = 300
+	ScriptWaitLabelTimeoutInSec int64  = 300 // 5 min
 	JobTimeoutInSec             int64  = ScriptWaitLabelTimeoutInSec * 2
+	JobTTLInSec                 int32  = 86400 * 7 // 7 day
 )
 
 type CPUManagerPolicy string
 type CPUManagerStatus string
 
 type CPUManagerUpdateStatus struct {
-	policy CPUManagerPolicy
-	status CPUManagerStatus
-	// err    error
+	Policy  CPUManagerPolicy `json:"policy"`
+	Status  CPUManagerStatus `json:"status"`
+	JobName string           `json:"jobName,omitempty"`
 }
 
 // cpuManagerNodeHandler updates cpu manager status of a node in its annotations, so that
@@ -80,127 +77,165 @@ func CPUManagerRegister(ctx context.Context, management *config.Management, opti
 		namespace:  options.Namespace,
 	}
 
-	node.OnChange(ctx, CPUManagerNodeControllerName, cpuManagerNodeHandler.OnNodeChanged)
+	node.OnChange(ctx, CPUManagerControllerName, cpuManagerNodeHandler.OnNodeChanged)
+	job.OnChange(ctx, CPUManagerControllerName, cpuManagerNodeHandler.OnJobChanged)
 
 	return nil
 }
 
-// TODO: how to deal with the error handling ?
-// TODO: add log to each skip
-// TODO: how do we check if there is kubelet on the node ?
+// // the cpu manager policy is under prcoess
+// if cpuManagerStatus.Status != CPUManagerRequestedStatus {
+// 	logrus.WithField("node_name", node.Name).Error("Update cpu manager policy is in progress")
+// 	return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+// }
+
+// // means CPUManager feature gate noe enabled
+// cpuManagerLabel, err := strconv.ParseBool(node.Labels[kubevirtv1.CPUManager])
+// if err != nil {
+// 	logrus.WithField("node_name", node.Name).WithError(err).Error("CPUManager label not found")
+// 	return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+// }
+// // the cpu manager policy is the same
+// if ((cpuManagerStatus.Policy == CPUManagerStaticPolicy) && cpuManagerLabel) || ((cpuManagerStatus.Policy == CPUManagerNonePolicy) && !cpuManagerLabel) {
+// 	logrus.WithField("node_name", node.Name).Error("Same cpu manager policy")
+// 	return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+// }
+
+// // if there is any vm that enable cpu pinning and we want to disable cpu manager
+// vmis, err := virtualmachineinstance.ListByNode(node, labels.NewSelector(), h.vmiCache)
+// if err != nil {
+// 	logrus.WithField("node_name", node.Name).WithError(err).Error("Failed to list virtual machine instances")
+// 	return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+// }
+// if isVMEnableCPUPinning(vmis) && cpuManagerStatus.Policy == CPUManagerNonePolicy {
+// 	logrus.WithField("node_name", node.Name).Error("Skip update since there shouldn't have any unstopped vm with cpu pinning when disable cpu manager")
+// 	return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+// }
+
+// // if this node is master and there are other master still under update policy progress
+// // only allow one master node update policy, since we will restart kubelet
+// nodes, err := h.nodeCache.List(labels.Everything())
+//
+//	if err != nil {
+//		logrus.WithField("node_name", node.Name).WithError(err).Error("Failed to list nodes")
+//		return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+//	}
+//
+//	if isMasterNodeUpdatingPolicy(nodes) {
+//		logrus.WithField("node_name", node.Name).Error("There is other master nodes updating cpu manager policy")
+//		return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
+//	}
 func (h *cpuManagerNodeHandler) OnNodeChanged(_ string, node *corev1.Node) (*corev1.Node, error) {
 	if node == nil || node.DeletionTimestamp != nil {
 		return node, nil
 	}
 
-	if node.Annotations[util.AnnotationCPUManagerUpdateStatus] == "" {
+	annot, ok := node.Annotations[util.AnnotationCPUManagerUpdateStatus]
+	if !ok {
 		return node, nil
 	}
 
-	cpuManagerStatus, err := getCPUManagerUpdateStatus(node.Annotations[util.AnnotationCPUManagerUpdateStatus])
+	cpuManagerStatus, err := GetCPUManagerUpdateStatus(annot)
 	if err != nil {
 		logrus.WithField("node_name", node.Name).WithError(err).Error("Skip update cpu manager policy, failed to retreive cpu-manager-update-status from annotation")
 		return node, nil
 	}
-
-	// the cpu manager policy is under prcoess
-	if cpuManagerStatus.status != CPUManagerRequestedStatus {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
+	// do nothing if status is not requested
+	if cpuManagerStatus.Status != CPUManagerRequestedStatus {
+		return node, nil
 	}
 
-	// means CPUManager feature gate noe enabled
-	cpuManagerLabel, err := strconv.ParseBool(node.Labels[kubevirtv1.CPUManager])
+	job, err := h.submitJob(cpuManagerStatus, node)
 	if err != nil {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
-	}
-	// the cpu manager policy is the same
-	if ((cpuManagerStatus.policy == CPUManagerStaticPolicy) && cpuManagerLabel) || ((cpuManagerStatus.policy == CPUManagerNonePolicy) && !cpuManagerLabel) {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
+		logrus.WithField("node_name", node.Name).WithError(err).Error("Submit cpu manager job failed")
+		return h.nodeClient.Update(updateNode(node, toFailedStatus(cpuManagerStatus)))
 	}
 
-	// if there is any vm that enable cpu pinning and we want to disable cpu manager
-	vmis, err := virtualmachineinstance.ListByNode(node, labels.NewSelector(), h.vmiCache)
-	if err != nil {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
-	}
-	if isVMEnableCPUPinning(vmis) && cpuManagerStatus.policy == CPUManagerNonePolicy {
-		logrus.WithField("node_name", node.Name).Info("Skip update since there shouldn't have any unstopped vm with cpu pinning when disable cpu manager")
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
-	}
-
-	// if this node is master and there are other master still under update policy progress
-	// only allow one master node update policy, since we will restart kubelet
-	nodes, err := h.nodeCache.List(labels.Everything())
-	if err != nil {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
-	}
-	if isMasterNodeUpdatingPolicy(nodes) {
-		return h.nodeClient.Update(failed(cpuManagerStatus, node))
-	}
-
-	return h.nodeClient.Update(running(cpuManagerStatus, node))
+	return h.nodeClient.Update(updateNode(node, toRunningStatus(cpuManagerStatus, job)))
 }
 
-func getCPUManagerUpdateStatus(jsonString string) (*CPUManagerUpdateStatus, error) {
+func (h *cpuManagerNodeHandler) OnJobChanged(_ string, job *batchv1.Job) (*batchv1.Job, error) {
+	if job == nil || job.DeletionTimestamp != nil {
+		return job, nil
+	}
+
+	nodeName, ok := job.Labels[util.LabelCPUManagerUpdateNode]
+	if !ok {
+		return job, nil
+	}
+
+	node, err := h.nodeCache.Get(nodeName)
+	if err != nil {
+		return job, err
+	}
+
+	if condition.Cond(batchv1.JobComplete).IsTrue(job) {
+		updateStatus := &CPUManagerUpdateStatus{
+			Status:  CPUManagerSuccessStatus,
+			Policy:  CPUManagerPolicy(job.Labels[util.LabelCPUManagerUpdatePolicy]),
+			JobName: job.Name,
+		}
+		if _, err := h.nodeClient.Update(updateNode(node, updateStatus)); err != nil {
+			return nil, err
+		}
+	}
+
+	if condition.Cond(batchv1.JobFailed).IsTrue(job) {
+		updateStatus := &CPUManagerUpdateStatus{
+			Status:  CPUManagerFailedStatus,
+			Policy:  CPUManagerPolicy(job.Labels[util.LabelCPUManagerUpdatePolicy]),
+			JobName: job.Name,
+		}
+		if _, err := h.nodeClient.Update(updateNode(node, updateStatus)); err != nil {
+			return nil, err
+		}
+	}
+
+	return job, nil
+}
+
+func GetCPUManagerUpdateStatus(jsonString string) (*CPUManagerUpdateStatus, error) {
 	cpuManagerStatus := &CPUManagerUpdateStatus{}
 	if err := json.Unmarshal([]byte(jsonString), cpuManagerStatus); err != nil {
 		return nil, err
 	}
-	if cpuManagerStatus.policy == "" {
+	if cpuManagerStatus.Policy == "" {
 		return nil, errors.New("invalid policy")
 	}
-	if cpuManagerStatus.status == "" {
+	if cpuManagerStatus.Status == "" {
 		return nil, errors.New("invalid status")
 	}
 	return cpuManagerStatus, nil
 }
 
-func isVMEnableCPUPinning(vmis []*kubevirtv1.VirtualMachineInstance) bool {
-	for _, vmi := range vmis {
-		if vmi.Spec.Domain.CPU != nil && vmi.Spec.Domain.CPU.DedicatedCPUPlacement {
-			return true
-		}
-	}
-	return false
+func copy(updateStatus *CPUManagerUpdateStatus) *CPUManagerUpdateStatus {
+	newUpdateStatus := &CPUManagerUpdateStatus{}
+	newUpdateStatus.Status = updateStatus.Status
+	newUpdateStatus.Policy = updateStatus.Policy
+	newUpdateStatus.JobName = updateStatus.JobName
+	return newUpdateStatus
 }
 
-func isMasterNodeUpdatingPolicy(nodes []*corev1.Node) bool {
-	for _, node := range nodes {
-		updateStatus, _ := getCPUManagerUpdateStatus(node.Annotations[util.AnnotationCPUManagerUpdateStatus])
-		if isManagementRole(node) && updateStatus.status == CPUManagerRunningStatus {
-			return true
-		}
-	}
-	return false
+func toFailedStatus(updateStatus *CPUManagerUpdateStatus) *CPUManagerUpdateStatus {
+	newUpdateStatus := copy(updateStatus)
+	newUpdateStatus.Status = CPUManagerFailedStatus
+	return newUpdateStatus
 }
 
-func failed(updateStatus *CPUManagerUpdateStatus, node *corev1.Node) *corev1.Node {
-	updateStatus.status = CPUManagerFailedStatus
-	jsonStr, err := json.Marshal(updateStatus)
-	// this shouldn't happen
-	if err != nil {
-		logrus.WithField("node_name", node.Name).Errorf("Failed to marshal cpu manager update status to json string %v", err)
-	}
+func toRunningStatus(updateStatus *CPUManagerUpdateStatus, job *batchv1.Job) *CPUManagerUpdateStatus {
+	newUpdateStatus := copy(updateStatus)
+	newUpdateStatus.Status = CPUManagerFailedStatus
+	newUpdateStatus.JobName = job.Name
+	return newUpdateStatus
+}
 
+func updateNode(node *corev1.Node, updateStatus *CPUManagerUpdateStatus) *corev1.Node {
+	jsonStr, _ := json.Marshal(updateStatus)
 	toUpdate := node.DeepCopy()
 	toUpdate.Annotations[util.AnnotationCPUManagerUpdateStatus] = string(jsonStr)
 	return toUpdate
 }
 
-func running(updateStatus *CPUManagerUpdateStatus, node *corev1.Node) *corev1.Node {
-	updateStatus.status = CPUManagerRunningStatus
-	jsonStr, err := json.Marshal(updateStatus)
-	// this shouldn't happen
-	if err != nil {
-		logrus.WithField("node_name", node.Name).Errorf("Failed to marshal cpu manager update status to json string %v", err)
-	}
-
-	toUpdate := node.DeepCopy()
-	toUpdate.Annotations[util.AnnotationCPUManagerUpdateStatus] = string(jsonStr)
-	return toUpdate
-}
-
-// TODO: is it possible to make the script without ; and good looking when using kubectl -o yaml (without \n) ?
 // TODO: should I rollback if anything goes wrong ?
 func getScript(nodeName string, policy CPUManagerPolicy) string {
 	var label string
@@ -290,17 +325,17 @@ exit 1
 `, HostDir, nodeName, policy, CPUManagerNonePolicy, CPUManagerStaticPolicy, ScriptWaitLabelTimeoutInSec, label)
 }
 
-// TODO: there is a bug in sed replace static/none
-// TODO: job name should be unique
-func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, node *corev1.Node, image string) *batchv1.Job {
+func (h *cpuManagerNodeHandler) getJob(policy CPUManagerPolicy, node *corev1.Node, image string) *batchv1.Job {
 	hostPathDirectory := corev1.HostPathDirectory
+	labels := map[string]string{
+		util.LabelCPUManagerUpdateNode:   node.Name,
+		util.LabelCPUManagerUpdatePolicy: string(policy),
+	}
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name.SafeConcatName(node.Name, "update-cpu-manager"),
-			Namespace: h.namespace,
-			Labels: map[string]string{
-				util.LabelCPUManagerUpdate: node.Name,
-			},
+			GenerateName: name.SafeConcatName(node.Name, "update-cpu-manager-"),
+			Namespace:    h.namespace,
+			Labels:       labels,
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: node.APIVersion,
@@ -311,15 +346,11 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(int32(0)),        // do not retry
-			TTLSecondsAfterFinished: ptr.To(int32(86400)),    // TODO is default value ok ?
-			ActiveDeadlineSeconds:   ptr.To(JobTimeoutInSec), // TODO is default value ok ?
+			BackoffLimit:            ptr.To(int32(0)), // do not retry
+			TTLSecondsAfterFinished: ptr.To(JobTTLInSec),
+			ActiveDeadlineSeconds:   ptr.To(JobTimeoutInSec),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						util.LabelCPUManagerUpdate: node.Name,
-					},
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					HostPID:       true,
@@ -327,7 +358,7 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 						{
 							Name:    "update-cpu-manager",
 							Image:   image,
-							Command: []string{"bash", "-c", getScript(node.Name, updateStatus.policy)},
+							Command: []string{"bash", "-c", getScript(node.Name, policy)},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "host-root", MountPath: HostDir},
 							},
@@ -364,17 +395,17 @@ func (h *cpuManagerNodeHandler) getJob(updateStatus *CPUManagerUpdateStatus, nod
 	}
 }
 
-func (h *cpuManagerNodeHandler) submitJob(updateStatus *CPUManagerUpdateStatus, node *corev1.Node) error {
+func (h *cpuManagerNodeHandler) submitJob(updateStatus *CPUManagerUpdateStatus, node *corev1.Node) (*batchv1.Job, error) {
 	image, err := catalog.FetchAppChartImage(h.appCache, h.namespace, releaseAppHarvesterName, []string{"generalJob", "image"})
 	if err != nil {
-		return fmt.Errorf("failed to get harvester image (%s): %v", image.ImageName(), err)
+		return nil, fmt.Errorf("failed to get harvester image (%s): %v", image.ImageName(), err)
 	}
 
-	_, err = h.jobClient.Create(h.getJob(updateStatus, node, image.ImageName()))
+	job, err := h.jobClient.Create(h.getJob(updateStatus.Policy, node, image.ImageName()))
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return job, nil
 }
