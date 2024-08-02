@@ -143,6 +143,46 @@ get_running_vm_count()
   rm -f "$vmioutput"
 }
 
+store_vm_state()
+{
+  local vms_json='{"vms": []}'
+
+  while IFS=$'\t' read -r name namespace; do
+    if [ -z "$name" ]; then
+      break
+    fi
+    # append each vm object (name and namespace) to the json array
+    vms_json=$(echo "$vms_json" | jq --arg name "$name" --arg namespace "$namespace" '.vms += [{"name": $name, "namespace": $namespace}]')
+  done <<< "$(kubectl get vmi -A -o json | jq -r '.items[] | select(.status.phase!="Succeeded") | [.metadata.name, .metadata.namespace] | @tsv')"
+
+  # save the vm names in secret
+  kubectl create secret generic pre-upgrade-vms -n harvester-system \
+    --from-literal=vms="$(echo $vms_json | base64)" --dry-run=client -o yaml | kubectl apply -f -
+}
+
+restore_vm_state()
+{
+  local vmis=/tmp/restore_vmis.json
+  rm -f "$vmioutput"
+
+  kubectl get secret pre-upgrade-vms -n harvester-system -o jsonpath='{.data.vms}' | base64 --decode > $vmis
+
+  echo "restore_vmis.json"
+  cat $vmis
+
+  jq -e '.' $vmis
+
+  while IFS=$'\t' read -r name namespace: do
+    if [ -z "$name" ]; then
+      break
+    fi
+    echo "start vm $namespace/$name..."
+    virtctl start $name -n $namespace
+  done <<< "$(jq -r '. | [.name, .namespace] | @tsv' $vmis)"
+
+  rm -f "$vmioutput"
+}
+
 wait_vms_out()
 {
   local vm_count="$(get_running_vm_count)"
