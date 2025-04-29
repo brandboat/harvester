@@ -12,7 +12,6 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	// Although we don't use following drivers directly, we need to import them to register drivers.
@@ -39,6 +38,7 @@ import (
 
 	networkv1 "github.com/harvester/harvester-network-controller/pkg/apis/network.harvesterhci.io/v1beta1"
 	"github.com/harvester/harvester-network-controller/pkg/utils"
+
 	"github.com/harvester/harvester/pkg/apis/harvesterhci.io/v1beta1"
 	"github.com/harvester/harvester/pkg/containerd"
 	nodectl "github.com/harvester/harvester/pkg/controller/master/node"
@@ -55,7 +55,7 @@ import (
 	vmUtil "github.com/harvester/harvester/pkg/util/virtualmachine"
 	werror "github.com/harvester/harvester/pkg/webhook/error"
 	"github.com/harvester/harvester/pkg/webhook/types"
-	webhookutil "github.com/harvester/harvester/pkg/webhook/util"
+	webhookUtil "github.com/harvester/harvester/pkg/webhook/util"
 )
 
 const (
@@ -715,7 +715,7 @@ func validateSupportBundleTimeoutHelper(value string) error {
 		return nil
 	}
 
-	i, err := strconv.Atoi(value)
+	i, err := webhookUtil.StrictAtoi(value)
 	if err != nil {
 		return err
 	}
@@ -745,7 +745,7 @@ func validateSupportBundleExpirationHelper(value string) error {
 		return nil
 	}
 
-	i, err := strconv.Atoi(value)
+	i, err := webhookUtil.StrictAtoi(value)
 	if err != nil {
 		return err
 	}
@@ -775,7 +775,7 @@ func validateSupportBundleNodeCollectionTimeoutHelper(value string) error {
 		return nil
 	}
 
-	i, err := strconv.Atoi(value)
+	i, err := webhookUtil.StrictAtoi(value)
 	if err != nil {
 		return err
 	}
@@ -1447,7 +1447,7 @@ func (v *settingValidator) checkStorageNetworkRangeValid(config *storagenetworkc
 		MinAllocatableIPAddrs = MinAllocatableIPAddrs + 2 + (len(lhNode.Spec.Disks) * 2)
 	}
 
-	count, err := webhookutil.GetUsableIPAddressesCount(config.Range, config.Exclude)
+	count, err := webhookUtil.GetUsableIPAddressesCount(config.Range, config.Exclude)
 	if err != nil {
 		return err
 	}
@@ -1464,7 +1464,7 @@ func validateDefaultVMTerminationGracePeriodSecondsHelper(value string) error {
 		return nil
 	}
 
-	num, err := strconv.ParseInt(value, 10, 64)
+	num, err := webhookUtil.StrictAtoi(value)
 	if err != nil {
 		return err
 	}
@@ -1533,7 +1533,7 @@ func validateKubeConfigTTLSettingHelper(value string) error {
 		return nil
 	}
 
-	num, err := strconv.Atoi(value)
+	num, err := webhookUtil.StrictAtoi(value)
 	if err != nil {
 		return err
 	}
@@ -1584,7 +1584,7 @@ func validateUpgradeConfigHelper(setting *v1beta1.Setting) (*settings.UpgradeCon
 	return config, nil
 }
 
-func validateUpgradeConfigFields(setting *v1beta1.Setting, isSingleNode bool) error {
+func validateUpgradeConfigFields(setting *v1beta1.Setting) error {
 	upgradeConfig, err := validateUpgradeConfigHelper(setting)
 	if err != nil {
 		return err
@@ -1609,20 +1609,11 @@ func validateUpgradeConfigFields(setting *v1beta1.Setting, isSingleNode bool) er
 		return fmt.Errorf("invalid image preload concurrency: %d", concurrency)
 	}
 
-	// Validate the restore VM field
-	if upgradeConfig.RestoreVM && !isSingleNode {
-		return fmt.Errorf("restoreVM is only supported in single node cluster")
-	}
-
 	return nil
 }
 
 func (v *settingValidator) validateUpgradeConfig(setting *v1beta1.Setting) error {
-	isSingleNode, err := v.isSingleNode()
-	if err != nil {
-		return err
-	}
-	return validateUpgradeConfigFields(setting, isSingleNode)
+	return validateUpgradeConfigFields(setting)
 }
 
 func (v *settingValidator) validateUpdateUpgradeConfig(_ *v1beta1.Setting, newSetting *v1beta1.Setting) error {
