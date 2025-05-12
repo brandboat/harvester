@@ -82,6 +82,7 @@ func Register(ctx context.Context, management *config.Management, options config
 		lhSettingCache:    lhSettings.Cache(),
 		kubeVirtCache:     kubeVirt.Cache(),
 		vmRestClient:      virtSubresourceClient,
+		settingCache:      settings.Cache(),
 	}
 	upgrades.OnChange(ctx, upgradeControllerName, controller.OnChanged)
 	upgrades.OnRemove(ctx, upgradeControllerName, controller.OnRemove)

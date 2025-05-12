@@ -206,6 +206,7 @@ func TestUpgradeHandler_OnChanged(t *testing.T) {
 			vmClient:         fakeclients.VirtualMachineClient(clientset.KubevirtV1().VirtualMachines),
 			vmImageClient:    fakeclients.VirtualMachineImageClient(clientset.HarvesterhciV1beta1().VirtualMachineImages),
 			vmImageCache:     fakeclients.VirtualMachineImageCache(clientset.HarvesterhciV1beta1().VirtualMachineImages),
+			settingCache:     fakeclients.HarvesterSettingCache(clientset.HarvesterhciV1beta1().Settings),
 		}
 		var actual output
 		actual.upgrade, actual.err = handler.OnChanged(tc.given.key, tc.given.upgrade)

@@ -110,6 +110,7 @@ type upgradeHandler struct {
 	vmiCache      kubevirtctrl.VirtualMachineInstanceCache
 	serviceClient ctlcorev1.ServiceClient
 	pvcClient     ctlcorev1.PersistentVolumeClaimClient
+	settingCache  ctlharvesterv1.SettingCache
 
 	clusterClient provisioningctrl.ClusterClient
 	clusterCache  provisioningctrl.ClusterCache
@@ -132,13 +133,12 @@ func (h *upgradeHandler) OnChanged(_ string, upgrade *harvesterv1.Upgrade) (*har
 
 	repo := NewUpgradeRepo(h.ctx, upgrade, h)
 
-	isRestoreVM, err := util.IsRestoreVM()
+	isRestoreVM, err := util.IsRestoreVM(h.settingCache)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"namespace": upgrade.Namespace,
 			"name":      upgrade.Name,
 		}).WithError(err).Error("Failed to get setting UpgradeConfig")
-		return nil, err
 	}
 	// restore VM state if the node upgrade is completed
 	if isRestoreVM && upgrade.Status.NodeStatuses != nil && len(upgrade.Status.NodeStatuses) > 0 {

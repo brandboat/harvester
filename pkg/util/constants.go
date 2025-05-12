@@ -28,6 +28,7 @@ const (
 	LabelSVMBackupTimestamp             = prefix + "/svmbackupTimestamp"
 	LabelVMCreator                      = prefix + "/creator"
 	LabelNodeNameKey                    = "kubevirt.io/nodeName"
+	LabelRestoreVMAfterUpgrade          = prefix + "/restore-vm-after-upgrade"
 	AnnotationStorageClassName          = prefix + "/storageClassName"
 	AnnotationStorageProvisioner        = prefix + "/storageProvisioner"
 	AnnotationIsDefaultStorageClassName = "storageclass.kubernetes.io/is-default-class"
