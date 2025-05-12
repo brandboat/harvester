@@ -2,6 +2,7 @@ package vmlivemigratedetector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/rancher/wrangler/v3/pkg/kv"
@@ -9,12 +10,17 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/selection" // Import Kubernetes client
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 
+	types "k8s.io/apimachinery/pkg/types"
+
+	ctlharvester "github.com/harvester/harvester/pkg/generated/controllers/harvesterhci.io"
+	ctlharvesterv1 "github.com/harvester/harvester/pkg/generated/controllers/harvesterhci.io/v1beta1"
+	"github.com/harvester/harvester/pkg/util"
 	"github.com/harvester/harvester/pkg/util/virtualmachineinstance"
 )
 
@@ -29,10 +35,24 @@ type VMLiveMigrateDetector struct {
 	kubeConfig  string
 	kubeContext string
 
-	nodeName string
-	shutdown bool
+	nodeName  string
+	shutdown  bool
+	restoreVM bool
 
 	virtClient kubecli.KubevirtClient
+	settings   ctlharvesterv1.SettingClient
+}
+
+type PatchStringValue struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+}
+
+var restoreVMPatch = PatchStringValue{
+	Op:    "add",
+	Path:  "/metadata/labels/" + util.LabelRestoreVMAfterUpgrade,
+	Value: true,
 }
 
 func NewVMLiveMigrateDetector(options DetectorOptions) *VMLiveMigrateDetector {
@@ -59,6 +79,23 @@ func (d *VMLiveMigrateDetector) Init() (err error) {
 	if err != nil {
 		logrus.Fatalf("cannot obtain KubeVirt client: %v\n", err)
 	}
+
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		logrus.Fatalf("cannot obtain rest config: %v\n", err)
+		return err
+	}
+
+	factory, err := ctlharvester.NewFactoryFromConfig(restConfig)
+	if err != nil {
+		logrus.Fatalf("cannot obtain harvester factory: %v\n", err)
+		return err
+	}
+	isRestoreVM, err := util.IsRestoreVM(factory.Harvesterhci().V1beta1().Setting().Cache())
+	if err != nil {
+		logrus.Warnf("cannot obtain restoreVM setting: %v, fallback to default: false\n", err)
+	}
+	d.restoreVM = isRestoreVM
 
 	return
 }
@@ -113,6 +150,16 @@ func (d *VMLiveMigrateDetector) Run(ctx context.Context) error {
 			if err := d.virtClient.VirtualMachine(namespace).Stop(ctx, name, &kubevirtv1.StopOptions{}); err != nil {
 				return err
 			}
+			// if restoreVM is enabled, we need to add a label: LabelRestoreVMAfterUpgrade to the VM
+			// to indicate that it should be restored after the upgrade
+			if d.restoreVM {
+				payload, _ := json.Marshal(restoreVMPatch)
+				if _, err := d.virtClient.VirtualMachine(namespace).Patch(ctx, name, types.JSONPatchType, payload, metav1.PatchOptions{}); err != nil {
+					logrus.Errorf("failed to patch VM %s with restoreVM label: %v", namespacedName, err)
+					return err
+				}
+			}
+
 			logrus.Infof("vm %s was administratively stopped", namespacedName)
 		}
 	}
