@@ -75,7 +75,8 @@ jobs:
         # If the issue is milestoned by harvester member, update to Resolved
         if [[ $team_count -gt 0 && 
               "${{ github.event_name }}" == "issues" && 
-              "${{ github.event.action }}" == "milestoned" ]]; then
+              "${{ github.event.action }}" == "milestoned" && 
+              "${{ steps.get-status-field.outputs.values }}" != "Closed" ]]; then
 
           echo "Updating to Resolved since it's milestoned by harvester member"
           echo "field-values=Resolved,[0]" >> $GITHUB_ENV
@@ -161,4 +162,9 @@ jobs:
         GH_TOKEN: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
       run: |
         ISSUE_NUMBER="${{ github.event.issue.number }}"
-        gh issue edit "$ISSUE_NUMBER" --milestone "Planning"
+
+        # Reduce the chance that milestone is modified by users and actions at the same time.
+        MILESTONE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json milestone --jq '.milestone.title')
+        if [ -z "$MILESTONE_TITLE" ]; then
+          gh issue edit "$ISSUE_NUMBER" --milestone "Planning"
+        fi
