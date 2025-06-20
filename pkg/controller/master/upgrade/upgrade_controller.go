@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	semverv3 "github.com/Masterminds/semver/v3"
 	provisioningv1 "github.com/rancher/rancher/pkg/apis/provisioning.cattle.io/v1"
 	rkev1 "github.com/rancher/rancher/pkg/apis/rke.cattle.io/v1"
+	mgmtv3 "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	provisioningctrl "github.com/rancher/rancher/pkg/generated/controllers/provisioning.cattle.io/v1"
 	"github.com/rancher/wrangler/v3/pkg/condition"
 	v1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/batch/v1"
@@ -49,7 +49,7 @@ const (
 	upgradeServiceAccount          = "system-upgrade-controller"
 	harvesterSystemNamespace       = util.HarvesterSystemNamespaceName
 	harvesterUpgradeLabel          = "harvesterhci.io/upgrade"
-	harvesterManagedLabel          = "harvesterhci.io/managed"
+	harvesterManagedLabel          = util.HarvesterManagedNodeLabelKey
 	harvesterLatestUpgradeLabel    = "harvesterhci.io/latestUpgrade"
 	harvesterUpgradeComponentLabel = "harvesterhci.io/upgradeComponent"
 	harvesterNodeLabel             = "harvesterhci.io/node"
@@ -76,15 +76,8 @@ const (
 	skipVersionCheckAnnotation          = "harvesterhci.io/skip-version-check"
 	defaultImagePreloadConcurrency      = 1
 
-	preUpgradeVMsAnnotation = "harvesterhci.io/pre-upgrade-vms"
-
 	vmReady condition.Cond = "Ready"
 )
-
-type PreUpgradeRunningVM struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-}
 
 // upgradeHandler Creates Plan CRDs to trigger upgrades
 type upgradeHandler struct {
@@ -102,6 +95,9 @@ type upgradeHandler struct {
 	planClient        upgradectlv1.PlanClient
 	planCache         upgradectlv1.PlanCache
 
+	managedChartCache  mgmtv3.ManagedChartCache
+	managedChartClient mgmtv3.ManagedChartClient
+
 	vmImageClient ctlharvesterv1.VirtualMachineImageClient
 	vmImageCache  ctlharvesterv1.VirtualMachineImageCache
 	vmClient      kubevirtctrl.VirtualMachineClient
@@ -114,8 +110,6 @@ type upgradeHandler struct {
 
 	lhSettingClient ctllhv1.SettingClient
 	lhSettingCache  ctllhv1.SettingCache
-
-	kubeVirtCache kubevirtctrl.KubeVirtCache
 
 	vmRestClient rest.Interface
 }
@@ -139,10 +133,6 @@ func (h *upgradeHandler) OnChanged(_ string, upgrade *harvesterv1.Upgrade) (*har
 
 		toUpdate := upgrade.DeepCopy()
 		initStatus(toUpdate)
-
-		if err := h.storeVMState(toUpdate); err != nil {
-			return nil, err
-		}
 
 		if !upgrade.Spec.LogEnabled {
 			logrus.Info("Upgrade observability is administratively disabled")
@@ -239,10 +229,6 @@ func (h *upgradeHandler) OnChanged(_ string, upgrade *harvesterv1.Upgrade) (*har
 			}
 		}
 
-		// moved the restoreVMState call after the start repo vm as we need to make sure kubevirt is up and running
-		// thus we can bring up the vm to the state before upgrade
-		h.restoreVMState(upgrade)
-
 		if err := h.cleanupImages(upgrade, repo); err != nil {
 			logrus.Warningf("Failed to cleanup images: %s", err.Error())
 			toUpdate := upgrade.DeepCopy()
@@ -260,10 +246,6 @@ func (h *upgradeHandler) OnChanged(_ string, upgrade *harvesterv1.Upgrade) (*har
 
 	// upgrade failed
 	if harvesterv1.UpgradeCompleted.IsFalse(upgrade) {
-		// try to restore vm to the state before upgrade
-		// we didn't wait for KubeVirt to reach the Deployed phase because the upgrade failed,
-		// as a result, some services might not be ready and may never fully start.
-		h.restoreVMState(upgrade)
 		// clean upgrade repo VMs.
 		return nil, h.cleanup(upgrade, harvesterv1.UpgradeCompleted.IsTrue(upgrade))
 	}
@@ -527,6 +509,33 @@ func (h *upgradeHandler) cleanup(upgrade *harvesterv1.Upgrade, cleanJobs bool) e
 		}
 	}
 
+	return h.resumeManagedCharts()
+}
+
+func (h *upgradeHandler) resumeManagedCharts() error {
+	managedCharts, err := h.managedChartCache.List(util.FleetLocalNamespaceName, labels.Everything())
+	if err != nil {
+		return nil
+	}
+
+	// those managedcharts might be paused by the upgrade script, resume them if they are not un-paused
+	targetManagedcharts := map[string]struct{}{util.HarvesterCRDManagedChart: {}, util.HarvesterManagedChart: {}, util.RancherLoggingCRDManagedChart: {}, util.RancherMonitoringCRDManagedChart: {}}
+
+	for _, managedChart := range managedCharts {
+		if !managedChart.Spec.Paused {
+			continue
+		}
+		if _, ok := targetManagedcharts[managedChart.Name]; !ok {
+			continue
+		}
+		mc := managedChart.DeepCopy()
+		mc.Spec.Paused = false
+		if _, err := h.managedChartClient.Update(mc); err != nil {
+			return fmt.Errorf("failed to resume managedchart %v %w", mc.Name, err)
+		}
+		logrus.Infof("managedchart %v is resumed", mc.Name)
+	}
+
 	return nil
 }
 
@@ -630,7 +639,7 @@ func ensureSingleUpgrade(namespace string, upgradeCache ctlharvesterv1.UpgradeCa
 	}
 
 	if len(onGoingUpgrades) != 1 {
-		return nil, fmt.Errorf("There are %d on-going upgrades", len(onGoingUpgrades))
+		return nil, fmt.Errorf("there are %d on-going upgrades", len(onGoingUpgrades))
 	}
 
 	return onGoingUpgrades[0], nil
@@ -642,37 +651,6 @@ func getCachedRepoInfo(upgrade *harvesterv1.Upgrade) (*repoinfo.RepoInfo, error)
 		return nil, err
 	}
 	return repoInfo, nil
-}
-
-func isVersionUpgradable(currentVersion, minUpgradableVersion string) error {
-	if minUpgradableVersion == "" {
-		logrus.Debug("No minimum upgradable version specified, continue the upgrading")
-		return nil
-	}
-
-	// short-circuit the equal cases as the library doesn't support the hack applied below
-	if currentVersion == minUpgradableVersion {
-		logrus.Debug("Upgrade from the exact same version as the minimum requirement")
-		return nil
-	}
-	// to enable comparisons against prerelease versions
-	constraint := fmt.Sprintf(">= %s-z", minUpgradableVersion)
-
-	c, err := semverv3.NewConstraint(constraint)
-	if err != nil {
-		return err
-	}
-	v, err := semverv3.NewVersion(currentVersion)
-	if err != nil {
-		return err
-	}
-
-	if a := c.Check(v); !a {
-		message := fmt.Sprintf("The current version %s is less than the minimum upgradable version %s.", currentVersion, minUpgradableVersion)
-		return fmt.Errorf("%s", message)
-	}
-
-	return nil
 }
 
 func upgradeEligibilityCheck(upgrade *harvesterv1.Upgrade) (bool, string) {
@@ -700,7 +678,7 @@ func (h *upgradeHandler) prepareNodesForUpgrade(upgrade *harvesterv1.Upgrade, re
 	logrus.WithFields(logrus.Fields{
 		"namespace":      upgrade.Namespace,
 		"name":           upgrade.Name,
-		"upgrade_config": upgradeConfig,
+		"upgrade_config": fmt.Sprintf("%+v", upgradeConfig),
 	}).Info("start preparing nodes for upgrade")
 
 	nodes, err := h.nodeCache.List(labels.Everything())
@@ -836,122 +814,6 @@ func (h *upgradeHandler) setAutoCleanupSystemGeneratedSnapshotValue(value string
 		}
 	}
 	return nil
-}
-
-// storeVMState stores VM state only in single-node environments.
-// this method stores information of VMs with Ready=true (i.e. running state) in the upgrade annotation
-func (h *upgradeHandler) storeVMState(upgrade *harvesterv1.Upgrade) error {
-	logFields := logrus.Fields{
-		"namespace": upgrade.Namespace,
-		"name":      upgrade.Name,
-	}
-	isSingleNodeRestoreVM, err := h.isSingleNodeRestoreVM(upgrade)
-	if err != nil {
-		return err
-	}
-	if !isSingleNodeRestoreVM {
-		logrus.WithFields(logFields).Info("Skip store VM state")
-		return nil
-	}
-
-	if upgrade.Annotations != nil && upgrade.Annotations[preUpgradeVMsAnnotation] != "" {
-		logrus.WithFields(logFields).Infof("Skip store VM state since %s is already set", preUpgradeVMsAnnotation)
-		return nil
-	}
-
-	vms, err := h.vmCache.List(corev1.NamespaceAll, labels.Everything())
-	if err != nil {
-		logrus.WithFields(logFields).WithError(err).Error("Failed to list all VMs")
-		return err
-	}
-
-	runningVMs := make([]*PreUpgradeRunningVM, 0)
-	for _, vm := range vms {
-		if vmReady.IsTrue(vm) {
-			vm := &PreUpgradeRunningVM{
-				Namespace: vm.Namespace,
-				Name:      vm.Name,
-			}
-			runningVMs = append(runningVMs, vm)
-		}
-	}
-	runningVMsJSON, err := json.Marshal(runningVMs)
-	if err != nil {
-		logrus.WithFields(logFields).WithError(err).Error("Failed to marshal PreUpgradeRunningVM list to json")
-		return err
-	}
-
-	if upgrade.Annotations == nil {
-		upgrade.Annotations = make(map[string]string)
-	}
-	upgrade.Annotations[preUpgradeVMsAnnotation] = string(runningVMsJSON)
-	return nil
-}
-
-// restoreVMState attempts to restore all VMs to their pre-upgrade state.
-// This function is designed for single-node environments. There is no guarantee
-// that all VMs will successfully return to their previous state. If any VM fails to start,
-// the error is logged, but the process continues without interruption.
-func (h *upgradeHandler) restoreVMState(upgrade *harvesterv1.Upgrade) {
-	logFields := logrus.Fields{
-		"namespace": upgrade.Namespace,
-		"name":      upgrade.Name,
-	}
-	// ignore the error here as the method should be no-op if there is
-	// something wrong in isSingleNodeRestoreVM, and we want to proceed
-	// to the next step: cleanup jobs, stop repo vm... after upgrade success/failed.
-	isSingleNodeRestoreVM, _ := h.isSingleNodeRestoreVM(upgrade)
-	if !isSingleNodeRestoreVM {
-		logrus.WithFields(logFields).Info("Skip restore VM")
-		return
-	}
-
-	if upgrade.Annotations == nil || upgrade.Annotations[preUpgradeVMsAnnotation] == "" {
-		logrus.WithFields(logFields).Infof("Skip restore VM state since %s is not set", preUpgradeVMsAnnotation)
-		return
-	}
-
-	preUpgradeRunningVMs := []PreUpgradeRunningVM{}
-	err := json.Unmarshal([]byte(upgrade.Annotations[preUpgradeVMsAnnotation]), &preUpgradeRunningVMs)
-	if err != nil {
-		logrus.WithFields(logFields).WithError(err).Error("Failed to unmarshal json to PreUpgradeRunningVM list")
-		return
-	}
-
-	for _, vmInfo := range preUpgradeRunningVMs {
-		vm, err := h.vmCache.Get(vmInfo.Namespace, vmInfo.Name)
-		if err != nil {
-			logrus.WithFields(logFields).WithError(err).Errorf("Failed to get VM %s/%s from cache", vmInfo.Namespace, vmInfo.Name)
-			continue
-		}
-		// the vm is already in running state
-		if vmReady.IsTrue(vm) {
-			continue
-		}
-		if err = h.startVM(context.Background(), vm); err != nil {
-			logrus.WithFields(logFields).WithError(err).Errorf("Failed to start vm %s/%s after upgrade", vmInfo.Namespace, vmInfo.Name)
-		}
-	}
-}
-
-func (h *upgradeHandler) isSingleNodeRestoreVM(upgrade *harvesterv1.Upgrade) (bool, error) {
-	singleNode, err := h.isSingleNodeCluster()
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"namespace": upgrade.Namespace,
-			"name":      upgrade.Name,
-		}).WithError(err).Error("Failed to check if cluster is single node")
-		return false, err
-	}
-	upgradeConfig, err := settings.DecodeConfig[settings.UpgradeConfig](settings.UpgradeConfigSet.Get())
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"namespace": upgrade.Namespace,
-			"name":      upgrade.Name,
-		}).WithError(err).Error("Failed to get UpgradeConfig")
-		return false, err
-	}
-	return singleNode != "" && upgradeConfig.RestoreVM, nil
 }
 
 func (h *upgradeHandler) startVM(ctx context.Context, vm *kubevirtv1.VirtualMachine) error {

@@ -66,7 +66,7 @@ func (b *Backend) Check(vmImg *harvesterv1.VirtualMachineImage) error {
 	targetDV, err := b.dataVolumeClient.Get(targetDVNs, targetDVName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logrus.Info("DataVolume not found, waiting for the initialization")
+			logrus.Infof("DataVolume %s/%s not found, waiting for the initialization", targetDVNs, targetDVName)
 			return err
 		}
 		return fmt.Errorf("failed to get DataVolume %s/%s: %v", targetDVNs, targetDVName, err)
@@ -83,15 +83,22 @@ func (b *Backend) Check(vmImg *harvesterv1.VirtualMachineImage) error {
 			if err != nil {
 				return fmt.Errorf("failed to convert progress to int: %v", err)
 			}
-			logrus.Infof("Update CDI DataVolume progress: %v", progressInt)
-			b.vmio.Importing(vmImg, "Image Importing", progressInt)
+			logrus.Infof("Update CDI DataVolume %s/%s progress: %v", targetDVNs, targetDVName, progressInt)
+			_, err = b.vmio.Importing(vmImg, "Image Importing", progressInt)
+			if err != nil {
+				// just log, we don't care the temporary error here
+				logrus.Errorf("failed to update VM Image progress: %v", err)
+			}
 		}
 		logrus.Infof("CDI DataVolume %s/%s status: %s, progress: %v", targetDVNs, targetDVName, targetDV.Status.Phase, progress)
 	}
 	if targetDV.Status.Phase != cdiv1.Succeeded {
 		return common.ErrRetryLater
 	}
-	b.vmio.Imported(vmImg, "", 100, vmImg.Status.Size, vmImg.Status.VirtualSize)
+	if _, err := b.vmio.Imported(vmImg, "", 100, vmImg.Status.Size, vmImg.Status.VirtualSize); err != nil {
+		return fmt.Errorf("failed to update VM Image status to Imported: %v", err)
+	}
+
 	return nil
 }
 

@@ -36,6 +36,7 @@ detect_repo()
   REPO_RANCHER_VERSION=$(yq -e e '.rancher' $release_file)
   REPO_MONITORING_CHART_VERSION=$(yq -e e '.monitoringChart' $release_file)
   REPO_LOGGING_CHART_VERSION=$(yq -e e '.loggingChart' $release_file)
+  REPO_LOGGING_CHART_HARVESTER_EVENTROUTER_VERSION=$(yq -e e '.loggingChartHarvesterEventRouter' $release_file)
   REPO_FLEET_CHART_VERSION=$(yq -e e '.rancherDependencies.fleet.chart' $release_file)
   REPO_FLEET_APP_VERSION=$(yq -e e '.rancherDependencies.fleet.app' $release_file)
   REPO_FLEET_CRD_CHART_VERSION=$(yq -e e '.rancherDependencies.fleet-crd.chart' $release_file)
@@ -78,6 +79,11 @@ detect_repo()
 
   if [ -z "$REPO_LOGGING_CHART_VERSION" ]; then
     echo "[ERROR] Fail to get logging chart version from upgrade repo."
+    exit 1
+  fi
+
+  if [ -z "$REPO_LOGGING_CHART_HARVESTER_EVENTROUTER_VERSION" ]; then
+    echo "[ERROR] Fail to get logging chart harvester eventrouter version from upgrade repo."
     exit 1
   fi
 
@@ -494,7 +500,8 @@ upgrade_addon_rancher_logging_with_patch_eventrouter_image()
   local name=rancher-logging
   local namespace=cattle-logging-system
   local newversion=$1
-  echo "try to patch addon $name in $namespace to $newversion, with patch of eventrouter image"
+  local ernewversion=$2
+  echo "try to patch addon $name in $namespace to $newversion, with patch of eventrouter image to $ernewversion"
 
   # check if addon is there
   local version=$(kubectl get addons.harvesterhci.io $name -n $namespace -o=jsonpath='{.spec.version}' || true)
@@ -517,16 +524,12 @@ upgrade_addon_rancher_logging_with_patch_eventrouter_image()
   if [ $EXIT_CODE != 0 ]; then
     echo "eventrouter is not found, need not patch"
   else
-    if [[ "rancher/harvester-eventrouter:v1.5.0-dev.0" > $tag ]]; then
-      echo "eventrouter image is $tag, will patch to v1.5.0-dev.0"
-      fixeventrouter=true
-    else
-      echo "eventrouter image is updated, need not patch"
-    fi
+    echo "eventrouter image is $tag, will patch to $ernewversion"
+    fixeventrouter=true
   fi
 
   if [[ $fixeventrouter == false ]]; then
-    echo "eventrouter image is updated/not found, fallback to the normal addon $name upgrade"
+    echo "eventrouter image is not found, fallback to the normal addon $name upgrade"
     rm -f $valuesfile
     upgrade_addon_try_patch_version_only $name $namespace $newversion
     return 0
@@ -536,7 +539,7 @@ upgrade_addon_rancher_logging_with_patch_eventrouter_image()
   cat $valuesfile
 
   if [[ $fixeventrouter == true ]]; then
-    yq -e '.eventTailer.workloadOverrides.containers[0].image = "rancher/harvester-eventrouter:v1.5.0-dev.0"' -i $valuesfile
+    NEW_VERSION=$ernewversion yq -e '.eventTailer.workloadOverrides.containers[0].image = strenv(NEW_VERSION)' -i $valuesfile
   fi
 
   # add 4 spaces to each line
@@ -837,4 +840,50 @@ upgrade_nvidia_driver_toolkit_addon()
     sed -i "s|HTTPENDPOINT/NVIDIA-Linux-x86_64-vgpu-kvm.run|${CURRENTENDPOINT}|" /usr/local/share/addons/nvidia-driver-toolkit.yaml
   fi
   upgrade_addon nvidia-driver-toolkit harvester-system
+}
+
+patch_grafana_nginx_proxy_config_configmap() {
+  local EXIT_CODE=0
+  local cm=grafana-nginx-proxy-config
+  local originValuesfile="/tmp/configmapvalue.yaml"
+  rm -f ${originValuesfile}
+
+  echo "try to patch configmap $cm when it exists"
+
+  kubectl get configmap -n cattle-monitoring-system ${cm} -ojsonpath="{.data['nginx\.conf']}" > ${originValuesfile} || EXIT_CODE=$?
+  if [[ $EXIT_CODE -gt 0 ]]; then
+    # e.g. the rancher-monitoring addon is not enabled
+    echo "did not find configmap $cm, skip"
+    return 0
+  fi
+
+  grep "c-m-" ${originValuesfile} || EXIT_CODE=$?
+  if [[ $EXIT_CODE -gt 0 ]]; then
+    echo "configmap $cm c-m- has been patched to c-"
+     rm -f ${originValuesfile}
+    return 0
+  fi
+
+  # replace the keyword "c-m-*" with "c-*"
+  sed -i -e 's/c-m-/c-/' ${originValuesfile}
+  # add 4 spaces to each line
+  sed -i -e 's/^/    /' ${originValuesfile}
+  local newvalues=$(<${originValuesfile})
+  rm -f ${originValuesfile}
+  local patchfile="/tmp/configmappatch.yaml"
+
+cat > ${patchfile} <<EOF
+data:
+  nginx.conf: |
+${newvalues}
+EOF
+
+  echo "the prepared patch file content"
+  cat ${patchfile}
+
+  kubectl patch configmap ${cm} -n cattle-monitoring-system --patch-file ${patchfile} --type merge || echo "patch configmap $cm failed"
+  rm -f ${patchfile}
+
+  echo "replace the grafana pod to use the new configmap"
+  kubectl delete pods -n cattle-monitoring-system -l app.kubernetes.io/name=grafana || echo "failed to delete the grafana pod, wait until the related host node is rebooted and then it gets the new configmap"
 }

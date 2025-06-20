@@ -1127,9 +1127,15 @@ EOF
 upgrade_addon_rancher_monitoring()
 {
   echo "upgrade addon rancher-monitoring"
+
   # .spec.valuesContent has dynamic fields, cannot merge simply, review in each release
   # in v1.5.0, patch version is OK
   upgrade_addon_try_patch_version_only "rancher-monitoring" "cattle-monitoring-system" $REPO_MONITORING_CHART_VERSION
+
+  # patch configmap and replace grafana pod if necessary
+  if [ "$REPO_MONITORING_CHART_VERSION" = "105.1.2+up61.3.2" ]; then
+    patch_grafana_nginx_proxy_config_configmap
+  fi
 }
 
 # NOTE: review in each release, add corresponding process
@@ -1137,12 +1143,8 @@ upgrade_addon_rancher_logging()
 {
   echo "upgrade addon rancher-logging"
   # .spec.valuesContent has dynamic fields, cannot merge simply, review in each release
-  # in v1.5.0, the eventrouter needs to be patched
-  if [ "$REPO_LOGGING_CHART_VERSION" = "105.2.0+up4.10.0" ]; then
-    upgrade_addon_rancher_logging_with_patch_eventrouter_image $REPO_LOGGING_CHART_VERSION
-  else
-    upgrade_addon_try_patch_version_only "rancher-logging" "cattle-logging-system" $REPO_LOGGING_CHART_VERSION
-  fi
+  # the eventrouter image tag is aligned with Harvester tag, e.g. v1.5.1-rc3, v1.6.0
+  upgrade_addon_rancher_logging_with_patch_eventrouter_image $REPO_LOGGING_CHART_VERSION $REPO_LOGGING_CHART_HARVESTER_EVENTROUTER_VERSION
 }
 
 # NOTE: review in each release, add corresponding process, runs before rancher-logging is bumped
@@ -1323,14 +1325,7 @@ EOF
 
 apply_extra_nonversion_manifests()
 {
-  echo "Applying whereabouts manifests"
-
   shopt -s nullglob
-
-  for manifest in /usr/local/share/extra_manifests/whereabouts/*.yaml; do
-      echo "Applying $manifest"
-      kubectl apply -f "$manifest"
-  done
 
   echo "Applying cdi manifests"
 

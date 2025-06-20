@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"time"
 
+	jobv1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/batch/v1"
 	ctlcorev1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +28,8 @@ type nodeHandler struct {
 	upgradeClient ctlharvesterv1.UpgradeClient
 	upgradeCache  ctlharvesterv1.UpgradeCache
 	secretClient  ctlcorev1.SecretClient
+	jobClient     jobv1.JobClient
+	jobCache      jobv1.JobCache
 }
 
 func (h *nodeHandler) OnChanged(_ string, node *corev1.Node) (*corev1.Node, error) {
@@ -75,7 +78,7 @@ func (h *nodeHandler) OnChanged(_ string, node *corev1.Node) (*corev1.Node, erro
 	}
 
 	if len(secrets.Items) != 1 {
-		return node, fmt.Errorf("Found %d plan secret for machine %s", len(secrets.Items), machineName)
+		return node, fmt.Errorf("found %d plan secret for machine %s", len(secrets.Items), machineName)
 	}
 
 	secret := secrets.Items[0]
@@ -97,7 +100,7 @@ func (h *nodeHandler) OnChanged(_ string, node *corev1.Node) (*corev1.Node, erro
 			}
 		}
 
-		err := h.retryUpdateNodeOnConflict(node.Name, func(n *corev1.Node) {
+		err = h.retryUpdateNodeOnConflict(node.Name, func(n *corev1.Node) {
 			if n.Annotations == nil {
 				return
 			}
@@ -133,5 +136,5 @@ func (h *nodeHandler) retryUpdateNodeOnConflict(nodeName string, updateFunc Node
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return errors.New("Fail to update node")
+	return errors.New("fail to update node")
 }

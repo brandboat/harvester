@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	// Although we don't use following drivers directly, we need to import them to register drivers.
@@ -23,7 +24,6 @@ import (
 	_ "github.com/longhorn/backupstore/nfs" //nolint
 	_ "github.com/longhorn/backupstore/s3"  //nolint
 	lhv1beta2 "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
-	longhornv1 "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
 	"github.com/rancher/lasso/pkg/log"
 	mgmtv3 "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	ctlcorev1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
@@ -38,7 +38,6 @@ import (
 
 	networkv1 "github.com/harvester/harvester-network-controller/pkg/apis/network.harvesterhci.io/v1beta1"
 	"github.com/harvester/harvester-network-controller/pkg/utils"
-
 	"github.com/harvester/harvester/pkg/apis/harvesterhci.io/v1beta1"
 	"github.com/harvester/harvester/pkg/containerd"
 	nodectl "github.com/harvester/harvester/pkg/controller/master/node"
@@ -100,6 +99,7 @@ var validateSettingFuncs = map[string]validateSettingFunc{
 	settings.AutoRotateRKE2CertsSettingName:                    validateAutoRotateRKE2Certs,
 	settings.KubeconfigDefaultTokenTTLMinutesSettingName:       validateKubeConfigTTLSetting,
 	settings.AdditionalGuestMemoryOverheadRatioName:            validateAdditionalGuestMemoryOverheadRatio,
+	settings.MaxHotplugRatioSettingName:                        validateMaxHotplugRatio,
 }
 
 type validateSettingUpdateFunc func(oldSetting *v1beta1.Setting, newSetting *v1beta1.Setting) error
@@ -120,6 +120,7 @@ var validateSettingUpdateFuncs = map[string]validateSettingUpdateFunc{
 	settings.AutoRotateRKE2CertsSettingName:                    validateUpdateAutoRotateRKE2Certs,
 	settings.KubeconfigDefaultTokenTTLMinutesSettingName:       validateUpdateKubeConfigTTLSetting,
 	settings.AdditionalGuestMemoryOverheadRatioName:            validateUpdateAdditionalGuestMemoryOverheadRatio,
+	settings.MaxHotplugRatioSettingName:                        validateUpdateMaxHotplugRatio,
 }
 
 type validateSettingDeleteFunc func(setting *v1beta1.Setting) error
@@ -343,7 +344,7 @@ func validateNoProxy(noProxy string, nodes []*corev1.Node) error {
 		}
 	}
 	if slices.Index(ds.MapValues(foundMap), false) != -1 {
-		missedNodes := ds.MapFilterFunc(foundMap, func(v bool, _ string) bool { return v == false })
+		missedNodes := ds.MapFilterFunc(foundMap, func(v bool, _ string) bool { return !v })
 		missedIPs := ds.MapKeys(missedNodes)
 		slices.Sort(missedIPs)
 		msg := fmt.Sprintf("noProxy should contain the node's IP addresses or CIDR. The node(s) %s are not covered.", strings.Join(missedIPs, ", "))
@@ -617,15 +618,15 @@ func validateNTPServersHelper(value string) error {
 
 	fqdnNameValidator, err := regexp.Compile(FQDNMatchNameRegexString)
 	if err != nil {
-		return fmt.Errorf("Failed to compile fqdnName regexp: %v", err)
+		return fmt.Errorf("failed to compile fqdnName regexp: %v", err)
 	}
 	fqdnPatternValidator, err := regexp.Compile(FQDNMatchPatternRegexString)
 	if err != nil {
-		return fmt.Errorf("Failed to compile fqdnPattern regexp: %v", err)
+		return fmt.Errorf("failed to compile fqdnPattern regexp: %v", err)
 	}
 	startWithHTTP, err := regexp.Compile("^https?://.*")
 	if err != nil {
-		return fmt.Errorf("Failed to compile startWithHttp regexp: %v", err)
+		return fmt.Errorf("failed to compile startWithHttp regexp: %v", err)
 	}
 
 	for _, server := range ntpSettings.NTPServers {
@@ -640,8 +641,8 @@ func validateNTPServersHelper(value string) error {
 	duplicates := ds.SliceFindDuplicates(ntpSettings.NTPServers)
 	if len(duplicates) > 0 {
 		errMsg := fmt.Sprintf("duplicate NTP server: %v", duplicates)
-		logrus.Errorf(errMsg)
-		return fmt.Errorf(errMsg)
+		logrus.Errorf("%s", errMsg)
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	logrus.Infof("NTP servers validation passed")
@@ -993,7 +994,7 @@ func (v *settingValidator) validateUpdateLonghornV2DataEngine(oldSetting, newSet
 		}
 		for _, node := range lhnodes {
 			for _, diskStatus := range node.Status.DiskStatus {
-				if diskStatus.Type == longhornv1.DiskTypeBlock {
+				if diskStatus.Type == lhv1beta2.DiskTypeBlock {
 					return werror.NewInvalidError(fmt.Sprintf("Can't disable Longhorn V2 Data Engine, disk %s is still here.", diskStatus.DiskUUID), settings.LonghornV2DataEngineSettingName)
 				}
 			}
@@ -1037,7 +1038,7 @@ func (v *settingValidator) validateStorageNetworkHelper(value string) error {
 
 	var config storagenetworkctl.Config
 	if err := json.Unmarshal([]byte(value), &config); err != nil {
-		return fmt.Errorf("failed to unmarshal the setting value, %v", err)
+		return fmt.Errorf("failed to unmarshal the setting value %v, %w", value, err)
 	}
 
 	if err := v.checkStorageNetworkVlanValid(&config); err != nil {
@@ -1072,7 +1073,12 @@ func (v *settingValidator) validateStorageNetwork(setting *v1beta1.Setting) erro
 		return werror.NewInvalidError(err.Error(), settings.KeywordValue)
 	}
 
-	return v.checkStorageNetworkValueVaild()
+	// When a new setting is created, it's value and default are both empty, do not check storage-network usage
+	if setting.Value != "" || setting.Default != "" {
+		return v.checkStorageNetworkUsage()
+	}
+
+	return nil
 }
 
 func (v *settingValidator) validateUpdateStorageNetwork(oldSetting *v1beta1.Setting, newSetting *v1beta1.Setting) error {
@@ -1092,7 +1098,7 @@ func (v *settingValidator) validateUpdateStorageNetwork(oldSetting *v1beta1.Sett
 		return werror.NewInvalidError(err.Error(), settings.KeywordValue)
 	}
 
-	return v.checkStorageNetworkValueVaild()
+	return v.checkStorageNetworkUsage()
 }
 
 func (v *settingValidator) validateDeleteStorageNetwork(_ *v1beta1.Setting) error {
@@ -1220,7 +1226,7 @@ func (v *settingValidator) checkOnlineVolume() error {
 	return nil
 }
 
-func (v *settingValidator) checkStorageNetworkValueVaild() error {
+func (v *settingValidator) checkStorageNetworkUsage() error {
 	// check all VM are stopped, there is no VMI
 	vms, err := v.vmCache.List(metav1.NamespaceAll, labels.Everything())
 	if err != nil {
@@ -1338,8 +1344,8 @@ func (v *settingValidator) checkVCSpansAllNodes(config *storagenetworkctl.Config
 }
 
 func (v *settingValidator) checkStorageNetworkVlanValid(config *storagenetworkctl.Config) error {
-	if config.Vlan < 0 || config.Vlan > 4094 {
-		return fmt.Errorf("The valid value range for VLAN IDs is 0 to 4094")
+	if config.Vlan > 4094 {
+		return fmt.Errorf("the valid value range for VLAN IDs is 0 to 4094")
 	}
 
 	if config.Vlan <= 1 && config.ClusterNetwork == mgmtClusterNetwork {
@@ -1584,7 +1590,7 @@ func validateUpgradeConfigHelper(setting *v1beta1.Setting) (*settings.UpgradeCon
 	return config, nil
 }
 
-func validateUpgradeConfigFields(setting *v1beta1.Setting, isSingleNode bool) error {
+func validateUpgradeConfigFields(setting *v1beta1.Setting) error {
 	upgradeConfig, err := validateUpgradeConfigHelper(setting)
 	if err != nil {
 		return err
@@ -1609,20 +1615,11 @@ func validateUpgradeConfigFields(setting *v1beta1.Setting, isSingleNode bool) er
 		return fmt.Errorf("invalid image preload concurrency: %d", concurrency)
 	}
 
-	// Validate the restore VM field
-	if upgradeConfig.RestoreVM && !isSingleNode {
-		return fmt.Errorf("restoreVM is only supported in single node cluster")
-	}
-
 	return nil
 }
 
 func (v *settingValidator) validateUpgradeConfig(setting *v1beta1.Setting) error {
-	isSingleNode, err := v.isSingleNode()
-	if err != nil {
-		return err
-	}
-	return validateUpgradeConfigFields(setting, isSingleNode)
+	return validateUpgradeConfigFields(setting)
 }
 
 func (v *settingValidator) validateUpdateUpgradeConfig(_ *v1beta1.Setting, newSetting *v1beta1.Setting) error {
@@ -1644,10 +1641,28 @@ func validateUpdateAdditionalGuestMemoryOverheadRatio(_ *v1beta1.Setting, newSet
 	return validateAdditionalGuestMemoryOverheadRatio(newSetting)
 }
 
-func (v *settingValidator) isSingleNode() (bool, error) {
-	nodes, err := v.nodeCache.List(labels.Everything())
-	if err != nil {
-		return false, err
+func validateMaxHotplugRatio(setting *v1beta1.Setting) error {
+	if err := validateMaxHotplugRatioHelper(settings.KeywordDefault, setting.Default); err != nil {
+		return err
 	}
-	return len(nodes) == 1, nil
+
+	return validateMaxHotplugRatioHelper(settings.KeywordValue, setting.Value)
+}
+
+func validateUpdateMaxHotplugRatio(_ *v1beta1.Setting, newSetting *v1beta1.Setting) error {
+	return validateMaxHotplugRatio(newSetting)
+}
+
+func validateMaxHotplugRatioHelper(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	num, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return fmt.Errorf("failed to parse %s: %v", field, err)
+	}
+	if num < 1 {
+		return fmt.Errorf("%s must be greater than or equal to 1", field)
+	}
+	return nil
 }

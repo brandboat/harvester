@@ -20,6 +20,10 @@ func (cv *Validator) Create(req *types.Request, vmImg *harvesterv1.VirtualMachin
 		return err
 	}
 
+	if err := cv.vmiv.SCConsistency(nil, vmImg); err != nil {
+		return err
+	}
+
 	if err := cv.vmiv.CheckURL(vmImg); err != nil {
 		return err
 	}
@@ -39,6 +43,10 @@ func (cv *Validator) Update(oldVMImg, newVMImg *harvesterv1.VirtualMachineImage)
 		return err
 	}
 
+	if err := cv.vmiv.SCConsistency(oldVMImg, newVMImg); err != nil {
+		return err
+	}
+
 	if cv.vmiv.IsExportVolume(newVMImg) {
 		if err := cv.vmiv.PVCConsistency(oldVMImg, newVMImg); err != nil {
 			return err
@@ -49,7 +57,7 @@ func (cv *Validator) Update(oldVMImg, newVMImg *harvesterv1.VirtualMachineImage)
 		return err
 	}
 
-	if err := cv.vmiv.CheckDisplayName(newVMImg); err != nil {
+	if err := cv.vmiv.CheckUpdateDisplayName(oldVMImg, newVMImg); err != nil {
 		return err
 	}
 
