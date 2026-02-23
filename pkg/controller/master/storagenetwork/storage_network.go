@@ -31,7 +31,9 @@ import (
 )
 
 const (
-	ControllerName = "harvester-storage-network-controller"
+	ControllerName             = "harvester-storage-network-controller"
+	RwxControllerName          = "harvester-rwx-storage-network-controller"
+	SnRwxEnabledControllerName = "harvester-sn-rwx-enabled-storage-network-controller"
 
 	// for compatiability, will be removed on Harvester v1.6.0
 	StorageNetworkAnnotation        = util.StorageNetworkAnnotation
@@ -59,7 +61,8 @@ const (
 	// error messages
 	msgWaitForVolumes = "waiting for all volumes detached: %s"
 
-	longhornStorageNetworkName = "storage-network"
+	longhornStorageNetworkName    = "storage-network"
+	longhornRwxStorageNetworkName = "endpoint-network-for-rwx-volume"
 )
 
 type Handler struct {
@@ -118,6 +121,8 @@ func Register(ctx context.Context, management *config.Management, _ config.Optio
 	}
 
 	settings.OnChange(ctx, ControllerName, controller.OnStorageNetworkChange)
+	settings.OnChange(ctx, RwxControllerName, controller.OnRwxStorageNetworkChange)
+	settings.OnChange(ctx, SnRwxEnabledControllerName, controller.OnStorageNetworkForRWXVolumeEnabledChange)
 	return nil
 }
 
@@ -215,6 +220,123 @@ func (h *Handler) OnStorageNetworkChange(_ string, setting *harvesterv1.Setting)
 	}
 
 	return updatedSetting, nil
+}
+
+// OnRwxStorageNetworkChange handles changes to the rwx-storage-network setting.
+func (h *Handler) OnRwxStorageNetworkChange(_ string, setting *harvesterv1.Setting) (*harvesterv1.Setting, error) {
+	if setting == nil || setting.DeletionTimestamp != nil || setting.Name != settings.RwxStorageNetworkSettingName {
+		return setting, nil
+	}
+
+	if setting.Annotations == nil {
+		if setting.Value == "" {
+			// Initialization case, don't update status, just skip it.
+			return setting, nil
+		}
+		setting.Annotations = make(map[string]string)
+	}
+
+	// if storage-network-for-rwx-volume-enabled is enabled and storage-network is configured, the LH setting
+	// endpoint-network-for-rwx-volume is governed by OnStorageNetworkForRWXVolumeEnabledChange
+	snNad, err := h.getStorageNetworkNADForRwx()
+	if err != nil {
+		return h.setConfiguredCondition(setting, false, "", fmt.Sprintf("failed to determine if storage network includes RWX: %v", err))
+	}
+	if snNad != "" {
+		return h.setConfiguredCondition(setting, true, ReasonCompleted, "storage network for RWX is enabled, RWX endpoint network is governed by storage network setting")
+	}
+
+	updatedSetting, err := h.checkValueIsChanged(setting.DeepCopy())
+	if err != nil {
+		return h.setConfiguredCondition(updatedSetting, false, "", fmt.Sprintf("check value changed error %v", err))
+	}
+	if updatedSetting == nil {
+		return h.setConfiguredCondition(updatedSetting, false, "", "updated setting is nil")
+	}
+
+	nad := updatedSetting.Annotations[util.NadStorageNetworkAnnotation]
+	if err = util.CheckRWXVolumesDetached(h.longhornVolumeCache); err != nil {
+		return h.setConfiguredCondition(updatedSetting, false, "", err.Error())
+	}
+	if err = h.syncLonghornRwxStorageNetwork(nad); err != nil {
+		return h.setConfiguredCondition(updatedSetting, false, "", fmt.Sprintf("update Longhorn %s setting error %v", longhornRwxStorageNetworkName, err))
+	}
+
+	return h.setConfiguredCondition(updatedSetting, true, ReasonCompleted, "")
+}
+
+// OnStorageNetworkForRWXVolumeEnabledChange handles changes to the storage-network-for-rwx-volume-enabled setting.
+// it propagates the storage-network NAD to the Longhorn endpoint-network-for-rwx-volume setting if
+// 1. storage-network-for-rwx-volume-enabled is set to "true" and
+// 2. storage-network is configured
+// Otherwise, it enqueues rwx-storage-network to reconcile.
+func (h *Handler) OnStorageNetworkForRWXVolumeEnabledChange(_ string, setting *harvesterv1.Setting) (*harvesterv1.Setting, error) {
+	if setting == nil || setting.DeletionTimestamp != nil || setting.Name != settings.StorageNetworkForRWXVolumeEnabledSettingName {
+		return setting, nil
+	}
+
+	rwxNad, err := h.getStorageNetworkNADForRwx()
+	if err != nil {
+		return h.setConfiguredCondition(setting, false, "", fmt.Sprintf("failed to get storage network NAD for RWX: %v", err))
+	}
+	if rwxNad == "" {
+		h.settingsController.Enqueue(settings.RwxStorageNetworkSettingName)
+		return h.setConfiguredCondition(setting, true, ReasonCompleted, fmt.Sprintf("rwx endpoint network governed by %s setting", settings.RwxStorageNetworkSettingName))
+	}
+	if err := util.CheckRWXVolumesDetached(h.longhornVolumeCache); err != nil {
+		return h.setConfiguredCondition(setting, false, "", err.Error())
+	}
+	if err := h.syncLonghornRwxStorageNetwork(rwxNad); err != nil {
+		return h.setConfiguredCondition(setting, false, "", fmt.Sprintf("failed to update longhorn %s: %v", longhornRwxStorageNetworkName, err))
+	}
+	return h.setConfiguredCondition(setting, true, ReasonCompleted, "")
+}
+
+// getStorageNetworkNADForRwx returns the NAD for RWX if
+// 1. storage-network-for-rwx-volume-enabled is set to "true" and
+// 2. storage network is configured
+// Otherwise, it returns an empty string.
+func (h *Handler) getStorageNetworkNADForRwx() (string, error) {
+	isSnRwxEnabled, err := h.settings.Get(settings.StorageNetworkForRWXVolumeEnabledSettingName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get %s setting: %v", settings.StorageNetworkForRWXVolumeEnabledSettingName, err)
+	}
+	storageNetwork, err := h.settings.Get(settings.StorageNetworkName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get %s setting: %v", settings.StorageNetworkName, err)
+	}
+
+	var effectiveValue string
+	if isSnRwxEnabled.Value == "" {
+		effectiveValue = isSnRwxEnabled.Default
+	} else {
+		effectiveValue = isSnRwxEnabled.Value
+	}
+
+	isRwxEnabled := effectiveValue == "true"
+	if !isRwxEnabled || storageNetwork.Value == "" {
+		return "", nil
+	}
+
+	// if storage network for rwx volume is enabled and storage network is configured, the NAD for RWX is the same as storage network NAD
+	nad, ok := storageNetwork.Annotations[util.NadStorageNetworkAnnotation]
+	if !ok || nad == "" {
+		return "", fmt.Errorf("storage-network annotation %s does not exist or is empty", util.NadStorageNetworkAnnotation)
+	}
+	return nad, nil
+}
+
+// syncLonghornRwxStorageNetwork updates the Longhorn RWX endpoint network setting
+// to the given NAD if it differs from the current value.
+func (h *Handler) syncLonghornRwxStorageNetwork(nad string) error {
+	lhNad, err := h.getLonghornRwxStorageNetwork()
+	if err != nil {
+		return fmt.Errorf("failed to get longhorn %s: %v", longhornRwxStorageNetworkName, err)
+	}
+	if lhNad == nad {
+		return nil
+	}
+	return h.updateLonghornRwxStorageNetwork(nad)
 }
 
 // calc sha1 hash
@@ -419,6 +541,15 @@ func (h *Handler) handleLonghornSettingPostConfig(setting *harvesterv1.Setting) 
 		}
 		h.settingsController.Enqueue(setting.Name)
 		return setting, err
+	}
+
+	isRwxEnabled, err := h.settings.Get(settings.StorageNetworkForRWXVolumeEnabledSettingName, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return setting, fmt.Errorf("failed to get %s setting: %v", settings.StorageNetworkForRWXVolumeEnabledSettingName, err)
+	}
+	if isRwxEnabled != nil && isRwxEnabled.Value == "true" {
+		// trigger OnStorageNetworkForRWXVolumeEnabledChange
+		h.settingsController.Enqueue(isRwxEnabled.Name)
 	}
 
 	updatedSetting, err := h.setConfiguredCondition(settingCopy, true, ReasonCompleted, "")
@@ -809,6 +940,30 @@ func (h *Handler) updateLonghornStorageNetwork(storageNetwork string) error {
 
 	if !reflect.DeepEqual(storage, storageCpy) {
 		_, err := h.longhornSettings.Update(storageCpy)
+		return err
+	}
+	return nil
+}
+
+func (h *Handler) getLonghornRwxStorageNetwork() (string, error) {
+	rwxSN, err := h.longhornSettingCache.Get(util.LonghornSystemNamespaceName, longhornRwxStorageNetworkName)
+	if err != nil {
+		return "", err
+	}
+	return rwxSN.Value, nil
+}
+
+func (h *Handler) updateLonghornRwxStorageNetwork(storageNetwork string) error {
+	rwxSN, err := h.longhornSettingCache.Get(util.LonghornSystemNamespaceName, longhornRwxStorageNetworkName)
+	if err != nil {
+		return err
+	}
+
+	rwxSNCpy := rwxSN.DeepCopy()
+	rwxSNCpy.Value = storageNetwork
+
+	if !reflect.DeepEqual(rwxSN, rwxSNCpy) {
+		_, err := h.longhornSettings.Update(rwxSNCpy)
 		return err
 	}
 	return nil

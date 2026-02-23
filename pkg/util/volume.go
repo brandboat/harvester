@@ -3,14 +3,18 @@ package util
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	ctlstoragev1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/storage/v1"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	ctlharvesterv1 "github.com/harvester/harvester/pkg/generated/controllers/harvesterhci.io/v1beta1"
+	ctllhv1 "github.com/harvester/harvester/pkg/generated/controllers/longhorn.io/v1beta2"
 	"github.com/harvester/harvester/pkg/settings"
+	lh "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta2"
 )
 
 const (
@@ -18,6 +22,7 @@ const (
 	AnnBetaStorageProvisioner = "volume.beta.kubernetes.io/storage-provisioner"
 	LonghornDataLocality      = "dataLocality"
 	IndexPodByPVC             = "indexPodByPVC"
+	rwxVolumeDisplayMax       = 3
 )
 
 var (
@@ -135,4 +140,36 @@ func GetCSIOnlineExpandValidation(
 	}
 
 	return coev[provisioner], nil
+}
+
+// CheckRWXVolumesDetached returns an error listing attached RWX volumes if any exist.
+// The corresponding Longhorn check: https://github.com/longhorn/longhorn-manager/blob/4a99de540e5ffa5078dbd39d42b8adf497c9659a/datastore/longhorn.go#L809
+// TODO: https://github.com/longhorn/longhorn/issues/12644 after this is merged, we can loose the RWX check for migratable: true volumes
+func CheckRWXVolumesDetached(volumeCache ctllhv1.VolumeCache) error {
+	volumes, err := volumeCache.List(LonghornSystemNamespaceName, labels.Everything())
+	if err != nil {
+		return fmt.Errorf("failed to list longhorn volumes: %v", err)
+	}
+
+	attached := make([]string, 0)
+	for _, volume := range volumes {
+		if volume.Spec.AccessMode != lh.AccessModeReadWriteMany {
+			continue
+		}
+		if volume.Status.State != lh.VolumeStateDetached {
+			attached = append(attached, volume.Name)
+		}
+	}
+
+	if len(attached) == 0 {
+		return nil
+	}
+
+	display := attached
+	suffix := ""
+	if len(attached) > rwxVolumeDisplayMax {
+		display = attached[:rwxVolumeDisplayMax]
+		suffix = "..."
+	}
+	return fmt.Errorf("there are attached RWX volumes: %s", strings.Join(display, ", ")+suffix)
 }

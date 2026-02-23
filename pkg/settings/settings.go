@@ -49,6 +49,8 @@ var (
 	CSIOnlineExpandValidation              = NewSetting(CSIOnlineExpandValidationSettingName, `{"driver.longhorn.io":true}`)
 	ContainerdRegistry                     = NewSetting(ContainerdRegistrySettingName, "")
 	StorageNetwork                         = NewSetting(StorageNetworkName, "")
+	RwxStorageNetwork                      = NewSetting(RwxStorageNetworkSettingName, "")
+	StorageNetworkForRWXVolumeEnabled      = NewSetting(StorageNetworkForRWXVolumeEnabledSettingName, "false")
 	DefaultVMTerminationGracePeriodSeconds = NewSetting(DefaultVMTerminationGracePeriodSecondsSettingName, "120")
 	AutoRotateRKE2CertsSet                 = NewSetting(AutoRotateRKE2CertsSettingName, InitAutoRotateRKE2Certs())
 	KubeconfigTTL                          = NewSetting(KubeconfigDefaultTokenTTLMinutesSettingName, "0") // "0" is default value to ensure token does not expire
@@ -89,6 +91,8 @@ const (
 	ContainerdRegistrySettingName                     = "containerd-registry"
 	HarvesterCSICCMSettingName                        = "harvester-csi-ccm-versions"
 	StorageNetworkName                                = "storage-network"
+	StorageNetworkForRWXVolumeEnabledSettingName      = "storage-network-for-rwx-volume-enabled"
+	RwxStorageNetworkSettingName                      = "rwx-storage-network"
 	DefaultVMTerminationGracePeriodSecondsSettingName = "default-vm-termination-grace-period-seconds"
 	SupportBundleExpirationSettingName                = "support-bundle-expiration"
 	NTPServersSettingName                             = "ntp-servers"

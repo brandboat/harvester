@@ -657,7 +657,6 @@ func (h *vmActionHandler) getNodeSelectorRequirementFromVMI(vmi *kubevirtv1.Virt
 }
 
 func (h *vmActionHandler) createVMBackup(vmName, vmNamespace string, input BackupInput) error {
-	apiGroup := kubevirtv1.SchemeGroupVersion.Group
 	backup := &harvesterv1.VirtualMachineBackup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      input.Name,
@@ -665,7 +664,7 @@ func (h *vmActionHandler) createVMBackup(vmName, vmNamespace string, input Backu
 		},
 		Spec: harvesterv1.VirtualMachineBackupSpec{
 			Source: corev1.TypedLocalObjectReference{
-				APIGroup: &apiGroup,
+				APIGroup: &kubevirtv1.VirtualMachineGroupVersionKind.Group,
 				Kind:     kubevirtv1.VirtualMachineGroupVersionKind.Kind,
 				Name:     vmName,
 			},

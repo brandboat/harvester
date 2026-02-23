@@ -1630,7 +1630,7 @@ func (v *settingValidator) checkStorageNetworkRangeValid(config *networkutil.Con
 	MinAllocatableIPAddrs := 0
 
 	// Formula - https://docs.harvesterhci.io/v1.4/advanced/storagenetwork/
-	//Number of Images to download/upload is dynamic, so skipped in the formula calculated.
+	// Number of Images to download/upload is dynamic, so skipped in the formula calculated.
 	for _, lhNode := range lhnodes {
 		MinAllocatableIPAddrs = MinAllocatableIPAddrs + 2 + (len(lhNode.Spec.Disks) * 2)
 	}
