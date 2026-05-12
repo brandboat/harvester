@@ -1,12 +1,14 @@
 pull_request_rules:
-- name: Automatically open multiple backport PRs
+- name: Automatically backport to any versioned branch
   conditions:
-    - base=master
+    - base=backport-auto
     - label~=^pr-backport-to/v\d+\.\d+$
   actions:
     backport:
-      branches:
-        - "{{ labels | selectattr('name', 'match', '^pr-backport-to/v\\d+\\.\\d+$') | map(attribute='name') | map('regex_replace', '^pr-backport-to/(v\\d+\\.\\d+)', '\\1') | list }}"
+      # This tells Mergify: "Look at my labels. If one matches this regex,
+      # take the first capture group and use it as the branch name."
+      regexes:
+        - ^pr-backport-to/(v\d+\.\d+)$
       assignees:
         - "{{ author }}"
 - name: Automatically merge Renovate PRs
